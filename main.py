@@ -18,6 +18,8 @@ import torch.distributed as dist
 import torch.optim
 import torch.multiprocessing as mp
 import torch.utils.data
+from torch.utils.data import Dataset, DataLoader
+
 import torch.utils.data.distributed
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
@@ -27,7 +29,31 @@ import math
 import numpy as np
 import torch.nn.functional as F
 
-from coco_dataset import get_coco_dataset
+#from coco_dataset import get_coco_dataset
+
+name_list = [ 
+        "nose",
+        "lEye",
+        "rEye",
+        "lEar",
+        "rEar",
+        "lShoulder",
+        "rShoulder",
+        "lElbow",
+        "rElbow",
+        "lWrist",
+        "rWrist",
+        "lHip",
+        "rHip",
+        "lKnee",
+        "rKnee",
+        "lAnkle",
+        "rAnkle",
+        "thorax",
+        "pelvis",
+        "neck",
+        "top"
+]
 
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
@@ -113,7 +139,57 @@ def iou(bbox0, bbox1):
 
     return intersect / (area0 + area1 - intersect + EPSILON)
 
-# TODO
+class PoseProposalNet(nn.Module):
+    def __init__(self, backbone):
+        super(PoseProposalNet, self).__init__()
+        self.insize = insize
+        self.keypoint_names = keypoint_names
+        self.edges = edges
+        self.local_grid_size = local_grid_size
+        self.dtype = dtype
+        self.lambda_resp = lambda_resp
+        self.lambda_iou = lambda_iou
+        self.lambda_coor = lambda_coor
+        self.lambda_size = lambda_size
+        self.lambda_limb = lambda_limb
+        self.parts_scale = np.array(parts_scale)
+        self.instance_scale = np.array(instance_scale)
+
+        self.outsize = self.get_outsize()
+        inW, inH = self.insize
+        outW, outH = self.outsize
+        self.gridsize = (int(inW / outW), int(inH / outH))
+
+	#ResNet w/o avgpool&fc
+        self.backbone = backbone
+
+        # modified cnn layer
+        self.conv1 = nn.Conv2d(512, 512, kernel_size=3, stride=1)
+        self.conv2 = nn.Conv2d(512, 512, kernel_size=3, stride=1)
+        self.conv3 = nn.Conv2d(512, (6*(15+1)+9*9*15), kernel_size=3, stride=1)
+        self.lRelu = nn.LeakyReLU(0.1)
+
+
+    def forward(self, input):
+        # load resnet 
+        resnet_out = self.backbone(input)
+        conv1_out = self.conv1(resnet_out)
+        lRelu1 = self.lRelu(conv1_out)
+
+        conv2_out = self.conv2(lRelu1)
+        lRelu2 = self.lRelu(conv2_out)
+
+        conv3_out = self.conv3(lRelu2)
+        out = self.linear(conv3_out)
+
+        return out
+
+    def get_outsize(self):
+        inp = np.zeros((2, 3, self.insize[1], self.insize[0]), dtype = np.float32)
+        out = self.forward(inp)
+        _, _, h, w = out.shape
+        return w, h
+
     def restore_xy(self, xp, y):
         #xp = get_array_module(x)
         gridW, gridH = self.gridsize
@@ -129,9 +205,6 @@ def iou(bbox0, bbox1):
         image = in_data['image']
         keypoints = in_data['keypoints']
         bbox = in_data['bbox']
-        is_labeled = in_data['is_labeled']
-        dataset_type = in_data['dataset_type']
-        area = in_data['area']
         num_keys = in_data['num_keys']
 
         inW, inH = self.insize
@@ -217,35 +290,6 @@ def iou(bbox0, bbox1):
         return image, delta, max_delta_ij, tx, ty, tw, th, te
 
 
-class PoseProposalNet(nn.Module):
-    def __init__(self, backbone):
-        super(PoseProposalNet, self).__init__()
-
-	#ResNet w/o avgpool&fc
-        self.backbone = backbone
-
-        # modified cnn layer
-        self.conv1 = nn.Conv2d(512, 512, kernel_size=3, stride=1)
-        self.conv2 = nn.Conv2d(512, 512, kernel_size=3, stride=1)
-        self.conv3 = nn.Conv2d(512, (6*(15+1)+9*9*15), kernel_size=3, stride=1)
-        self.lRelu = nn.LeakyReLU(0.1)
-        self.linear = nn.Linear((6*(15+1)+9*9*15), (6*(15+1)+9*9*15))
-
-
-    def forward(self, input):
-        # load resnet 
-        resnet_out = self.backbone(input)
-        conv1_out = self.conv1(resnet_out)
-        lRelu1 = self.lRelu(conv1_out)
-
-        conv2_out = self.conv2(lRelu1)
-        lRelu2 = self.lRelu(conv2_out)
-
-        conv3_out = self.conv3(lRelu2)
-        out = self.linear(conv3_out)
-
-        return out
-
 best_acc1 = 0
 
 def main():
@@ -294,6 +338,45 @@ def main_worker(gpu, ngpus_per_node, args):
             args.rank = args.rank * ngpus_per_node + gpu
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
                                 world_size=args.world_size, rank=args.rank)
+
+    # Data loading code
+    traindir = os.path.join(args.data, 'train')
+    valdir = os.path.join(args.data, 'val')
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                     std=[0.229, 0.224, 0.225])
+
+    train_dataset = datasets.ImageFolder(
+        traindir,
+        transforms.Compose([
+            transforms.RandomResizedCrop(224),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            normalize,
+        ]))
+
+    if args.distributed:
+        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
+    else:
+        train_sampler = None
+
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
+        num_workers=args.workers, pin_memory=True, sampler=train_sampler)
+
+    val_loader = torch.utils.data.DataLoader(
+        datasets.ImageFolder(valdir, transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            normalize,
+        ])),
+        batch_size=args.batch_size, shuffle=False,
+        num_workers=args.workers, pin_memory=True)
+
+
+
+
+
     # create model
     if args.pretrained:
         print("=> using pre-trained model '{}'".format(args.arch))
@@ -372,40 +455,6 @@ def main_worker(gpu, ngpus_per_node, args):
             print("=> no checkpoint found at '{}'".format(args.resume))
 
     cudnn.benchmark = True
-
-    # Data loading code
-    traindir = os.path.join(args.data, 'train')
-    valdir = os.path.join(args.data, 'val')
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
-
-    train_dataset = datasets.ImageFolder(
-        traindir,
-        transforms.Compose([
-            transforms.RandomResizedCrop(224),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            normalize,
-        ]))
-
-    if args.distributed:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-    else:
-        train_sampler = None
-
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
-        num_workers=args.workers, pin_memory=True, sampler=train_sampler)
-
-    val_loader = torch.utils.data.DataLoader(
-        datasets.ImageFolder(valdir, transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            normalize,
-        ])),
-        batch_size=args.batch_size, shuffle=False,
-        num_workers=args.workers, pin_memory=True)
 
     if args.evaluate:
         validate(val_loader, model, criterion, args)
