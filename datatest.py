@@ -28,6 +28,8 @@ import cv2
 #from augment import *
 from PIL import Image
 
+import imgaug as ia
+from imgaug import augmenters as iaa
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-d", "--file", help="json file path")
@@ -35,6 +37,8 @@ parser.add_argument("-img", "--root_dir", help="path to train2017 or val2018")
 
 args = parser.parse_args()
 root_dir = args.root_dir
+
+#set random seed
 
 name_list = [
         "nose",
@@ -149,13 +153,7 @@ def intersection(bbox0, bbox1):
 def iou(bbox0, bbox1):
     area0 = area(bbox0)
     area1 = area(bbox1)
-    print("box0:", bbox0[0].shape)
-    print("box1:", bbox1[0].shape)
-    #print('area0:', area0.shape)
-    #print('area1:', area1.shape)
-    
     intersect = intersection(bbox0, bbox1)
-    print('intersect:', intersect.shape)
 
     return intersect / (area0 + area1 - intersect + EPSILON)
 
@@ -210,7 +208,76 @@ class KeypointsDataset(Dataset):
             sample = self.transform(sample)
 
         return sample
-   
+
+class IAA(object):
+    def __init__(self, output_size):
+        assert isinstance(output_size, (int, tuple))
+        self.output_size = output_size
+
+    def __call__(self, sample):
+        image, keypoints, bbox = sample['image'], sample['keypoints'][:,[0,1]], sample['bbox']
+        h, w = image.shape[:2]
+
+        #filter existed keypoints , aka exclude zero value
+        kps_coords = []
+        kps = []
+        keypoints = keypoints.tolist()
+        for temp in keypoints:
+            if temp[0] >0 and temp[1] >0:
+                kps_coords.append((temp[0],temp[1]))
+
+        for kp_x, kp_y in kps_coords:
+            kps.append(ia.Keypoint(kp_x, kp_y))
+
+        bbs = ia.BoundingBoxesOnImage([
+            ia.BoundingBox(x1 = bbox[0]-bbox[2]//2, 
+                        y1=bbox[1]-bbox[3]//2,
+                        x2=bbox[0]+bbox[2]//2, 
+                        y2=bbox[1]+bbox[3]//2)
+            ], shape=image.shape[:2])
+        kps_oi = ia.KeypointsOnImage(kps, shape= image.shape[:2])
+
+        seq = iaa.Sequential([
+            iaa.Affine(
+                rotate=(-40, 40),
+                scale=(0.35, 2.5)
+            ), # rotate by exactly 10deg and scale to 50-70%, affects keypoints
+            iaa.Multiply((1.2, 1.5)), # change brightness, doesn't affect keypoints
+            iaa.Fliplr(0.5),
+            iaa.Flipud(0.5),
+            iaa.CropAndPad(
+                percent=(-0.2, 0.2),
+                pad_mode=["constant", "edge"],
+                pad_cval=(0, 128)
+            ),
+            iaa.Scale({"height": self.output_size[0], "width": self.output_size[1]})
+        ]) 
+
+        seq_det = seq.to_deterministic()
+        image_aug = seq_det.augment_images([image])[0]
+        keypoints_aug = seq_det.augment_keypoints([kps_oi])[0]
+        bbs_aug = seq_det.augment_bounding_boxes([bbs])[0]
+        
+        # update keypoints and bbox
+        cnt = 0
+        for temp in keypoints:
+            if temp[0] >0 and temp[1] >0:
+                temp[0] = keypoints_aug.keypoints[cnt].x
+                temp[1] = keypoints_aug.keypoints[cnt].y
+                cnt +=1
+
+        keypoints = np.asarray(keypoints, dtype= np.float32)
+        new_bbox = []
+        for i in range(len(bbs_aug.bounding_boxes)):
+            temp = bbs_aug.bounding_boxes[i]
+            new_bbox.append((temp.x2+temp.x1)/2)
+            new_bbox.append((temp.y2+temp.y1)/2)
+            new_bbox.append((temp.x2-temp.x1))
+            new_bbox.append((temp.y2-temp.y1))
+
+        img = transform.resize(image_aug, (384, 384))
+        return {'image': img, 'keypoints': keypoints, 'bbox': new_bbox}
+ 
 class Rescale(object):
     def __init__(self, output_size):
         assert isinstance(output_size, (int, tuple))
@@ -219,16 +286,6 @@ class Rescale(object):
     def __call__(self, sample):
         image, landmarks, bbox = sample['image'], sample['keypoints'][:,[0,1]], sample['bbox']
         h, w = image.shape[:2]
-
-#        if isinstance(self.output_size, int):
-#            if h > w:
-#                new_h, new_w = self.output_size * h / w, self.output_size
-#            else:
-#                new_h, new_w = self.output_size, self.output_size * w / h
-#        else:
-#            new_h, new_w = self.output_size
-#
-#        new_h, new_w = int(new_h), int(new_w)
 
         new_h, new_w = self.output_size
         #scikit-learn resize transform
@@ -741,29 +798,65 @@ class PPNLoss(nn.Module):
 
 train_set = KeypointsDataset(json_file = args.file, root_dir = args.root_dir,
         transform=transforms.Compose([
-            Rescale((384,384)),
+            #Rescale((384,384)),
+            IAA((384,384)),
             #RandomRotate(),
             ToTensor()
         ]))
 
-for i in range(len(train_set)):
-    sample = train_set[i]
-
-    print(i, sample['image'].size(), sample['keypoints'].size(), sample['bbox'].size())
-
-    if i == 3:
-        break
+#for i in range(len(train_set)):
+#    sample = train_set[i]
+#
+#    print(i, sample['image'].size(), sample['keypoints'].size(), sample['bbox'].size())
+#
+#    if i == 3:
+#        break
 
 
 dataloader = DataLoader(train_set, batch_size=4,
                         shuffle=False, num_workers=1)
+   
 
-#class PoseProposalNet(nn.Module):
-#    def __init__(self, backbone, insize=(384,384), outsize=(32,32), keypoint_names = KEYPOINT_NAMES , local_grid_size= (9,9), edges = EDGES ):
-       
+# Helper function to show a batch
+def show_landmarks_batch(sample_batched):
+    """Show image with landmarks for a batch of samples."""
+    images_batch, landmarks_batch = \
+            sample_batched['image'], sample_batched['keypoints']
+    batch_size = len(images_batch)
+    im_size = images_batch.size(2)
+
+    grid = utils.make_grid(images_batch)
+    plt.imshow(grid.numpy().transpose((1,2,0)))
+
+    #print(landmarks_batch.shape, grid.shape)
+    for i in range(batch_size):
+        #print(i, ", x:", landmarks_batch[i, :, 0].numpy(), ", y:", landmarks_batch[i, :, 1].numpy())
+        plt.scatter(landmarks_batch[i, :, 0].numpy() + i * im_size,
+                    landmarks_batch[i, :, 1].numpy(),
+                    s=10, marker='.', c='r')
+
+        plt.title('Batch from dataloader')
+
+for i_batch, sample_batched in enumerate(dataloader):
+    print(i_batch, sample_batched['image'].size(),
+          sample_batched['keypoints'].size())
+
+    # observe 4th batch and stop.
+    if i_batch == 1:
+        plt.figure()
+        show_landmarks_batch(sample_batched)
+        plt.axis('off')
+        plt.ioff()
+        plt.show()
+        break
+
+
+
+'''
+dataloader = DataLoader(train_set, batch_size=4,
+                        shuffle=False, num_workers=1)
+
 # create model for resnet18
-#device = torch.device('cuda')
-
 model = models.__dict__['resnet18'](pretrained=True)
 
 # Detach under avgpull layer in Resnet
@@ -775,8 +868,6 @@ loss = PPNLoss().cuda()
 summary(model, (3,384,384))
 
 
-#summary(model, (3,224,224))
-
 for i_batch, x in enumerate(dataloader):
 
     img = x['image'].cuda()
@@ -787,44 +878,4 @@ for i_batch, x in enumerate(dataloader):
     #out cuda tensor
     loss(out, bbox, label)
     sys.exit(1)
-    
-
-## Helper function to show a batch
-#def show_landmarks_batch(sample_batched):
-#    """Show image with landmarks for a batch of samples."""
-#    images_batch, landmarks_batch = \
-#            sample_batched['image'], sample_batched['keypoints']
-#    batch_size = len(images_batch)
-#    im_size = images_batch.size(2)
-#
-#    grid = utils.make_grid(images_batch)
-#    plt.imshow(grid.numpy().transpose((1,2,0)))
-#
-#    #print(landmarks_batch.shape, grid.shape)
-#    for i in range(batch_size):
-#        #print(i, ", x:", landmarks_batch[i, :, 0].numpy(), ", y:", landmarks_batch[i, :, 1].numpy())
-#        plt.scatter(landmarks_batch[i, :, 0].numpy() + i * im_size,
-#                    landmarks_batch[i, :, 1].numpy(),
-#                    s=10, marker='.', c='r')
-#
-#        plt.title('Batch from dataloader')
-#
-#for i_batch, sample_batched in enumerate(dataloader):
-#    print(i_batch, sample_batched['image'].size(),
-#          sample_batched['keypoints'].size())
-#
-#    # observe 4th batch and stop.
-#    if i_batch == 1:
-#        plt.figure()
-#        show_landmarks_batch(sample_batched)
-#        plt.axis('off')
-#        plt.ioff()
-#        plt.show()
-#        break
-#
-##Load model
-##encode data
-#
-##apply transformation
-#
-##show examples
+''' 
