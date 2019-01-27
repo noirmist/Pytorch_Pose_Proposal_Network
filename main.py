@@ -31,10 +31,9 @@ from torchvision import utils
 import torchvision.datasets as datasets
 import torchvision.models as models
 
-from torchsummary import summary
-
+from skimage import io, transform
+from skimage.color import gray2rgb
 import numpy as np
-
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -44,6 +43,9 @@ from PIL import Image
 
 import imgaug as ia
 from imgaug import augmenters as iaa
+
+from torchsummary import summary
+from visdom import Visdom
 
 name_list = [ 
         "nose",
@@ -146,11 +148,10 @@ model_names = sorted(name for name in models.__dict__
     and callable(models.__dict__[name]))
 
 parser = argparse.ArgumentParser(description='PyTorch PoseProposalNet Training')
-parser.add_argument("-d", "--file", help="json file path")
+parser.add_argument("-train", "--train_file", help="json file path")
+parser.add_argument("-val", "--val_file", help="json file path")
 parser.add_argument("-img", "--root_dir", help="path to train2017 or val2018")
 
-parser.add_argument('data', metavar='DIR',
-                    help='path to dataset')
 parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet18',
                     choices=model_names,
                     help='model architecture: ' +
@@ -171,7 +172,7 @@ parser.add_argument('--lr', '--learning-rate', default=0.1, type=float,
                     metavar='LR', help='initial learning rate', dest='lr')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
-parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
+parser.add_argument('--wd', '--weight-decay', default=5e-4, type=float,
                     metavar='W', help='weight decay (default: 1e-4)',
                     dest='weight_decay')
 parser.add_argument('-p', '--print-freq', default=10, type=int,
@@ -186,14 +187,18 @@ parser.add_argument('--seed', default=None, type=int,
                     help='seed for initializing training. ')
 parser.add_argument('--gpu', default=None, type=int,
                     help='GPU id to use.')
+parser.add_argument('--world-size', default=-1, type=int,
+                    help='number of nodes for distributed training')
+parser.add_argument('--rank', default=-1, type=int,
+                    help='node rank for distributed training')
 parser.add_argument('--multiprocessing-distributed', action='store_true',
                     help='Use multi-processing distributed training to launch '
                          'N processes per node, which has N GPUs. This is the '
                          'fastest way to use PyTorch for either single node or '
                          'multi node data parallel training')
 
-# Network implementation
 
+# Network implementation
 def parse_size(text):
     w, h = text.split('x')
     w = float(w)
@@ -227,10 +232,6 @@ def iou(bbox0, bbox1):
 
     return intersect / (area0 + area1 - intersect + EPSILON)
 
-def max_delta(delta1, delta2):
-    batch = delta.shape[0]
-
-    max_val = torch.max(delta1, delta2)
 
 def show_landmarks(image, keypoints, bbox):
     """Show image with keypoints"""
@@ -251,9 +252,10 @@ def show_landmarks(image, keypoints, bbox):
 
 
 class IAA(object):
-    def __init__(self, output_size):
+    def __init__(self, output_size, mode):
         assert isinstance(output_size, (int, tuple))
         self.output_size = output_size
+        self.mode = mode
 
     def __call__(self, sample):
         image, keypoints, bbox = sample['image'], sample['keypoints'][:,[0,1]], sample['bbox']
@@ -277,22 +279,34 @@ class IAA(object):
                         y2=bbox[1]+bbox[3]//2)
             ], shape=image.shape[:2])
         kps_oi = ia.KeypointsOnImage(kps, shape= image.shape[:2])
+        if self.mode =='train':
+            seq = iaa.Sequential([
+                iaa.Affine(
+                    rotate=(-40, 40),
+                    scale=(0.35, 2.5)
+                ), # random rotate by -40-40deg and scale to 35-250%, affects keypoints
+                iaa.Multiply((1.2, 1.5)), # change brightness, doesn't affect keypoints
+                iaa.Fliplr(0.5),
+                iaa.Flipud(0.5),
+                iaa.CropAndPad(
+                    percent=(-0.2, 0.2),
+                    pad_mode=["constant", "edge"],
+                    pad_cval=(0, 128)
+                ),
+                iaa.Scale({"height": self.output_size[0], "width": self.output_size[1]})
+            ])
+        else:
+            seq = iaa.Sequential([
+                iaa.Affine(
+                    rotate=(-40, 40),
+                    scale=(0.35, 2.5)
+                ), # random rotate by -40-40deg and scale to 35-250%, affects keypoints
+                iaa.Multiply((0.5, 1.5)), # change brightness, doesn't affect keypoints
+                iaa.Fliplr(0.5),
+                iaa.Flipud(0.5),
+                iaa.Scale({"height": self.output_size[0], "width": self.output_size[1]})
+            ])
 
-        seq = iaa.Sequential([
-            iaa.Affine(
-                rotate=(-40, 40),
-                scale=(0.35, 2.5)
-            ), # rotate by exactly 10deg and scale to 50-70%, affects keypoints
-            iaa.Multiply((1.2, 1.5)), # change brightness, doesn't affect keypoints
-            iaa.Fliplr(0.5),
-            iaa.Flipud(0.5),
-            iaa.CropAndPad(
-                percent=(-0.2, 0.2),
-                pad_mode=["constant", "edge"],
-                pad_cval=(0, 128)
-            ),
-            iaa.Scale({"height": self.output_size[0], "width": self.output_size[1]})
-        ])
         seq_det = seq.to_deterministic()
         image_aug = seq_det.augment_images([image])[0]
         keypoints_aug = seq_det.augment_keypoints([kps_oi])[0]
@@ -316,7 +330,9 @@ class IAA(object):
             new_bbox.append((temp.y2-temp.y1))
 
         img = transform.resize(image_aug, (384, 384))
-        return {'image': img, 'keypoints': keypoints, 'bbox': new_bbox}
+        sample['keypoints'][:,[0,1]] = keypoints 
+        
+        return {'image': img, 'keypoints': sample['keypoints'], 'bbox': new_bbox}
 
 
 class ToTensor(object):
@@ -329,6 +345,8 @@ class ToTensor(object):
         # PIL  image 
         # numpy image: H x W x C
         # torch image: C X H X W
+        #print("totensor img shape:", image.shape)
+        #sys.stdout.flush()
         image = np.array(image).transpose((2, 0, 1))
         image = torch.from_numpy(image)
         image = image.float()
@@ -355,7 +373,8 @@ class KeypointsDataset(Dataset):
 
     def __getitem__(self, idx):
         img_name = os.path.join(self.root_dir, self.annotations[idx]['file_name'])
-        image = io.imread(img_name).astype(np.uint8)
+        image = gray2rgb(io.imread(img_name).astype(np.uint8))
+        
         # center_x, center_y, visible_coco, width, height
         keypoints = np.array(self.annotations[idx]["keypoints"], dtype='float32').reshape(-1, 5)
         bbox = self.annotations[idx]['bbox']    # [center_x, center_y , width, height]
@@ -395,28 +414,30 @@ class PoseProposalNet(nn.Module):
         self.conv2 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=3//2, bias=False)
         self.conv3 = nn.Conv2d(512, self.lastsize, kernel_size=1, stride=1)
         #self.conv3 = nn.Conv2d(512, 1311, kernel_size=1, stride=1)
+
         self.linear = nn.Linear(144,1024)
         self.lRelu = nn.LeakyReLU(0.1)
+        self.bn = nn.BatchNorm2d(512)
 
 
     def forward(self, input):
 
-        print("input type:", input.dtype)
+        #print("input type:", input.dtype)
         # load resnet 
         resnet_out = self.backbone(input)
         conv1_out = self.conv1(resnet_out)
-        #TODO add batchnorm
-        lRelu1 = self.lRelu(conv1_out)
+        bn1 = self.bn(conv1_out)
+        lRelu1 = self.lRelu(bn1)
 
         conv2_out = self.conv2(lRelu1)
         lRelu2 = self.lRelu(conv2_out)
 
         conv3_out = self.conv3(lRelu2)
-        print("conv3_out:", conv3_out[0][0][0].shape)
-        print("conv3_out:", conv3_out[0][0][0])
+        #print("conv3_out:", conv3_out[0][0][0].shape)
+        #print("conv3_out:", conv3_out[0][0][0])
 
         out = self.linear(conv3_out.reshape(-1,self.lastsize, 144)).reshape(-1,self.lastsize, 32,32)
-        print("network out type:", out.dtype)
+        #print("network out type:", out.dtype)
 
         return out
 
@@ -435,7 +456,7 @@ class PPNLoss(nn.Module):
                 lambda_limb=0.5
                 ):
         super(PPNLoss, self).__init__()
-        print("PPLloss init")
+        #print("PPLloss init")
         self.batch_size = batch_size
         self.insize = insize
         self.keypoint_names = keypoint_names
@@ -458,7 +479,7 @@ class PPNLoss(nn.Module):
         self.lambda_coor = lambda_coor
         self.lambda_size = lambda_size
         self.lambda_limb = lambda_limb
-        print("PPLloss init done")
+        #print("PPLloss init done")
 
     def restore_xy(self, x, y):
         gridW, gridH = self.gridsize
@@ -480,7 +501,7 @@ class PPNLoss(nn.Module):
         outW, outH = self.outsize
 
         #feature_map = self.forward(image)      
-        print("feature_map shape:", feature_map.shape)
+        #print("feature_map shape:", feature_map.shape)
         #loss function with torch
         resp = feature_map[:, 0 * K:1 * K, :, :]
         conf = feature_map[:, 1 * K:2 * K, :, :]
@@ -555,10 +576,6 @@ class PPNLoss(nn.Module):
 
 
     def encode(self, bbox, keypoints):
-        #in_data is Tensor
-        #image = in_data['image'] # batch x channel x width x height
-        #keypoints = in_data['keypoints'] # batch x keypoints x [ x, y, v, w, h ]
-
         #print("keypoints size:", keypoints.size())
         keypoints_xy = torch.narrow(keypoints, 2,0,2)
         #print("keypoints xy size:", keypoints_xy.size())
@@ -688,6 +705,7 @@ def main():
     args.distributed = args.multiprocessing_distributed
 
     ngpus_per_node = torch.cuda.device_count()
+
     if args.multiprocessing_distributed:
         # Since we have ngpus_per_node processes per node, the total world_size
         # needs to be adjusted accordingly
@@ -715,17 +733,14 @@ def main_worker(gpu, ngpus_per_node, args):
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
                                 world_size=args.world_size, rank=args.rank)
 
-    root_dir = args.root_dir
-
     # Data loading code
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
+    #normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+    #                                 std=[0.229, 0.224, 0.225])
 
-    train_dataset = KeypointsDataset(json_file = args.train_file, root_dir = args.root_dir,
+    train_dataset = KeypointsDataset(json_file = args.train_file, root_dir = args.root_dir+"/train2017/",
                     transform=transforms.Compose([
-                        normalize,
-                        IAA((384,384)),
-                        ToTensor()
+                        IAA((384,384),'train'),
+                        ToTensor(),
                     ]))
 
     
@@ -739,11 +754,10 @@ def main_worker(gpu, ngpus_per_node, args):
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler)
 
-    val_dataset = KeypointsDataset(json_file = args.val_file, root_dir = args.root_dir,
+    val_dataset = KeypointsDataset(json_file = args.val_file, root_dir = args.root_dir+"/val2017/",
                 transform=transforms.Compose([
-                    Rescale((384,384)),
-                    #RandomRotate(),
-                    ToTensor()
+                    IAA((384,384),'val'),
+                    ToTensor(),
                 ]))
 
 
@@ -766,41 +780,12 @@ def main_worker(gpu, ngpus_per_node, args):
     model = nn.Sequential(*modules)
     model = PoseProposalNet(model)
 
-    if args.distributed:
-        # For multiprocessing distributed, DistributedDataParallel constructor
-        # should always set the single device scope, otherwise,
-        # DistributedDataParallel will use all available devices.
-        if args.gpu is not None:
-            torch.cuda.set_device(args.gpu)
-            model.cuda(args.gpu)
-            # When using a single GPU per process and per
-            # DistributedDataParallel, we need to divide the batch size
-            # ourselves based on the total number of GPUs we have
-            args.batch_size = int(args.batch_size / ngpus_per_node)
-            args.workers = int(args.workers / ngpus_per_node)
-            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-        else:
-            model.cuda()
-            # DistributedDataParallel will divide and allocate batch_size to all
-            # available GPUs if device_ids are not set
-            model = torch.nn.parallel.DistributedDataParallel(model)
-    elif args.gpu is not None:
-        torch.cuda.set_device(args.gpu)
-        model = model.cuda(args.gpu)
-    else:
-        # DataParallel will divide and allocate batch_size to all available GPUs
-        if args.arch.startswith('alexnet') or args.arch.startswith('vgg'):
-            model.features = torch.nn.DataParallel(model.features)
-            model.cuda()
-        else:
-            model = torch.nn.DataParallel(model).cuda()
+    if torch.cuda.device_count() > 1:
+        model = torch.nn.DataParallel(model).cuda()
 
     # define loss function (criterion) and optimizer
-    #TODO define custom loss 
-    #criterion = nn.CrossEntropyLoss().cuda(args.gpu)
-
-    criterion = PPNLoss().cuda(args.gpu)
-
+    # define custom loss 
+    criterion = PPNLoss(batch_size = args.batch_size).cuda(args.gpu)
     optimizer = torch.optim.SGD(model.parameters(), args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
@@ -835,7 +820,8 @@ def main_worker(gpu, ngpus_per_node, args):
         train(train_loader, model, criterion, optimizer, epoch, args)
 
         # evaluate on validation set
-        epoch_loss = validate(val_loader, model, criterion, args)
+        epoch_loss = validate(val_loader, model, criterion, epoch, args)
+        plotter.plot('loss', 'val', 'PPN Loss', epoch*len(train_loader), epoch_loss) 
 
         # remember best acc@1 and save checkpoint
         is_best = epoch_loss < best_loss
@@ -857,8 +843,6 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
-    #top1 = AverageMeter()
-    #top5 = AverageMeter()
 
     # switch to train mode
     model.train()
@@ -869,21 +853,22 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         data_time.update(time.time() - end)
 
         adjust_learning_rate(optimizer, i, args)
-        if args.gpu is not None:
-            img = target['image'].cuda(args.gpu, non_blocking=True)
-            bbox = target['bbox'].cuda(args.gpu, non_blocking=True)
-            label = target['keypoints'].cuda(args.gpu, non_blocking=True)
+
+#        if args.gpu is not None:
+#            img = target['image'].cuda(args.gpu, non_blocking=True)
+#            bbox = target['bbox'].cuda(args.gpu, non_blocking=True)
+#            label = target['keypoints'].cuda(args.gpu, non_blocking=True)
+
+        img = target['image'].cuda()
+        bbox = target['bbox'].cuda()
+        label = target['keypoints'].cuda()
 
         # compute output
         output = model(img)
         loss = criterion(output, bbox, label)
 
         # measure accuracy and record loss
-        #TODO implement accuracy
-        #acc1, acc5 = accuracy(output, target, topk=(1, 5))
         losses.update(loss.item(), img.size(0))
-        #top1.update(acc1[0], img.size(0))
-        #top5.update(acc5[0], img.size(0))
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
@@ -895,30 +880,19 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         end = time.time()
 
         if i % args.print_freq == 0:
-            '''
-            print('Epoch: [{0}][{1}/{2}]\t'
-                  'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                  'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                  'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                  'Acc@1 {top1.val:.3f} ({top1.avg:.3f})\t'
-                  'Acc@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
-                   epoch, i, len(train_loader), batch_time=batch_time,
-                   data_time=data_time, loss=losses, top1=top1, top5=top5))
-            '''
             print('Epoch: [{0}][{1}/{2}]\t'
                   'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                   'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
                   'Loss {loss.val:.4f} ({loss.avg:.4f})'.format(
                    epoch, i, len(train_loader), batch_time=batch_time,
                    data_time=data_time, loss=losses))
+            plotter.plot('loss', 'train', 'PPN Loss', epoch*len(train_loader)+i, losses.avg) 
 
+#TODO function for evaluation like OKS
 
-
-def validate(val_loader, model, criterion, args):
+def validate(val_loader, model, criterion, epoch, args):
     batch_time = AverageMeter()
     losses = AverageMeter()
-    #top1 = AverageMeter()
-    #top5 = AverageMeter()
 
     # switch to evaluate mode
     model.eval()
@@ -927,20 +901,16 @@ def validate(val_loader, model, criterion, args):
         end = time.time()
 
         for i, target in enumerate(val_loader):
-            if args.gpu is not None:
-                img = target['image'].cuda(args.gpu, non_blocking=True)
-                bbox = target['bbox'].cuda(args.gpu, non_blocking=True)
-                label = target['keypoints'].cuda(args.gpu, non_blocking=True)
+            img = target['image'].cuda()
+            bbox = target['bbox'].cuda()
+            label = target['keypoints'].cuda()
 
             # compute output
             output = model(img)
             loss = criterion(output, target)
 
-            # measure accuracy and record loss
-            #acc1, acc5 = accuracy(output, target, topk=(1, 5))
+            # measure and record loss
             losses.update(loss.item(), img.size(0))
-            #top1.update(acc1[0], img.size(0))
-            #top5.update(acc5[0], img.size(0))
 
             # measure elapsed time
             batch_time.update(time.time() - end)
@@ -952,28 +922,15 @@ def validate(val_loader, model, criterion, args):
                       'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                       'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
                       'Loss {loss.val:.4f} ({loss.avg:.4f})'.format(
-                       epoch, i, len(train_loader), batch_time=batch_time,
+                       epoch, i, len(val_loader), batch_time=batch_time,
                        data_time=data_time, loss=losses))
-                '''
-                print('Test: [{0}/{1}]\t'
-                      'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                      'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                      'Acc@1 {top1.val:.3f} ({top1.avg:.3f})\t'
-                      'Acc@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
-                       i, len(val_loader), batch_time=batch_time, loss=losses,
-                       top1=top1, top5=top5))
-                '''
-        #print(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'
-        #      .format(top1=top1, top5=top5))
-
-    #return top1.avg
     return losses.avg
 
 
-def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
+def save_checkpoint(state, is_best, filename='PPN_checkpoint.pth.tar'):
     torch.save(state, filename)
     if is_best:
-        shutil.copyfile(filename, 'model_best.pth.tar')
+        shutil.copyfile(filename, 'PPN_model_best.pth.tar')
 
 
 class AverageMeter(object):
@@ -993,37 +950,37 @@ class AverageMeter(object):
         self.count += n
         self.avg = self.sum / self.count
 
+class VisdomLinePlotter(object):
+    """Plots to Visdom"""
+    def __init__(self, env_name='main'):
+        self.viz = Visdom()
+        self.env = env_name
+        self.plots = {}
+    def plot(self, var_name, split_name, title_name, x, y):
+        if var_name not in self.plots:
+            self.plots[var_name] = self.viz.line(X=np.array([x,x]), Y=np.array([y,y]), env=self.env, opts=dict(
+                legend=[split_name],
+                title=title_name,
+                xlabel='Iteration',
+                ylabel=var_name
+            ))
+        else:
+            self.viz.line(X=np.array([x]), Y=np.array([y]), env=self.env, win=self.plots[var_name], name=split_name, update = 'append')
 
 def adjust_learning_rate(optimizer, iters, args):
-    """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
+    """Sets the learning rate to the initial LR decayed linearly each iteration"""
     lr = 0.007 * (1  - iters/260000)
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
-#TODO ignore accuracy
-def accuracy(output, target, topk=(1,)):
-    """Computes the accuracy over the k top predictions for the specified values of k"""
-    with torch.no_grad():
-        maxk = max(topk)
-        batch_size = target.size(0)
-
-        _, pred = output.topk(maxk, 1, True, True)
-        pred = pred.t()
-        correct = pred.eq(target.view(1, -1).expand_as(pred))
-
-        res = []
-        for k in topk:
-            correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
-            res.append(correct_k.mul_(100.0 / batch_size))
-        return res
-
 
 if __name__ == '__main__':
+
     import logging
+    global plotter
     logger.addHandler(logging.StreamHandler())
     logger.setLevel(logging.INFO)
-# Run formard propagation of cnn and obtain RPs of person instances and parts and limb detections.
-
+    plotter = VisdomLinePlotter(env_name="PoseProposalNet")
     main()
 
 #b^i_k 
