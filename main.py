@@ -5,6 +5,9 @@ import shutil
 import time
 import warnings
 import sys
+import json
+import math
+import cv2
 
 import logging
 logger = logging.getLogger(__name__)
@@ -13,6 +16,8 @@ logging.basicConfig(level=logging.INFO)
 import torch
 import torch.nn as nn
 import torch.nn.parallel
+import torch.nn.functional as F
+
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 import torch.optim
@@ -22,44 +27,128 @@ from torch.utils.data import Dataset, DataLoader
 
 import torch.utils.data.distributed
 import torchvision.transforms as transforms
+from torchvision import utils
 import torchvision.datasets as datasets
 import torchvision.models as models
 
-import math
-import numpy as np
-import torch.nn.functional as F
+from torchsummary import summary
 
-#from coco_dataset import get_coco_dataset
+import numpy as np
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+
+from utils import pairwise
+from PIL import Image
+
+import imgaug as ia
+from imgaug import augmenters as iaa
 
 name_list = [ 
         "nose",
-        "lEye",
-        "rEye",
-        "lEar",
-        "rEar",
-        "lShoulder",
-        "rShoulder",
-        "lElbow",
-        "rElbow",
-        "lWrist",
-        "rWrist",
-        "lHip",
-        "rHip",
-        "lKnee",
-        "rKnee",
-        "lAnkle",
-        "rAnkle",
+        "left_eye",
+        "right_eye",
+        "left_ear",
+        "right_ear",
+        "left_shoulder",
+        "right_shoulder",
+        "left_elbow",
+        "right_elbow",
+        "left_wrist",
+        "right_wrist",
+        "left_hip",
+        "right_hip",
+        "left_knee",
+        "right_knee",
+        "left_ankle",
+        "right_ankle",
         "thorax",
         "pelvis",
         "neck",
         "top"
 ]
 
+COLOR_MAP = {
+    'instance': (225, 225, 225),
+    'nose': (255, 0, 0),
+    'right_shoulder': (255, 170, 0),
+    'right_elbow': (255, 255, 0),
+    'right_wrist': (170, 255, 0),
+    'left_shoulder': (85, 255, 0),
+    'left_elbow': (0, 127, 0),
+    'left_wrist': (0, 255, 85),
+    'right_hip': (0, 170, 170),
+    'right_knee': (0, 255, 255),
+    'right_ankle': (0, 170, 255),
+    'left_hip': (0, 85, 255),
+    'left_knee': (0, 0, 255),
+    'left_ankle': (85, 0, 255),
+    'right_eye': (170, 0, 255),
+    'left_eye': (255, 0, 255),
+    'right_ear': (255, 0, 170),
+    'left_ear': (255, 0, 85),
+    'thorax': (128, 0, 80),
+    'pelvis': (128, 80, 170),
+    'neck': (255, 85, 0),
+    'top': (200, 80, 0)
+}
+
+EDGES_BY_NAME = [
+    ['instance', 'thorax'],
+    ['thorax','neck'],
+    ['neck', 'nose'],
+    ['nose', 'top'],
+    ['nose', 'left_eye'],
+    ['left_eye', 'left_ear'],
+    ['nose', 'right_eye'],
+    ['right_eye', 'right_ear'],
+    ['instance', 'left_shoulder'],
+    ['left_shoulder', 'left_elbow'],
+    ['left_elbow', 'left_wrist'],
+    ['instance', 'right_shoulder'],
+    ['right_shoulder', 'right_elbow'],
+    ['right_elbow', 'right_wrist'],
+    ['instance', 'pelvis'],
+    ['pelvis', 'left_hip'],
+    ['left_hip', 'left_knee'],
+    ['left_knee', 'left_ankle'],
+    ['pelvis', 'right_hip'],
+    ['right_hip', 'right_knee'],
+    ['right_knee', 'right_ankle'],
+]
+
+KEYPOINT_NAMES = ['instance'] + name_list
+EDGES = [[KEYPOINT_NAMES.index(s), KEYPOINT_NAMES.index(d)] for s, d in EDGES_BY_NAME]
+
+TRACK_ORDER_0 = ['instance', 'thorax', 'neck', 'nose', 'left_eye', 'left_ear']
+TRACK_ORDER_1 = ['instance', 'thorax', 'neck', 'nose', 'right_eye', 'right_ear']
+TRACK_ORDER_2 = ['instance', 'thorax', 'neck', 'nose', 'top']
+TRACK_ORDER_3 = ['instance', 'left_shoulder', 'left_elbow', 'left_wrist']
+TRACK_ORDER_4 = ['instance', 'right_shoulder', 'right_elbow', 'right_wrist']
+TRACK_ORDER_5 = ['instance', 'pelvis', 'left_hip', 'left_knee', 'left_ankle']
+TRACK_ORDER_6 = ['instance', 'pelvis', 'right_hip', 'right_knee', 'right_ankle']
+
+TRACK_ORDERS = [TRACK_ORDER_0, TRACK_ORDER_1, TRACK_ORDER_2, TRACK_ORDER_3, TRACK_ORDER_4, TRACK_ORDER_5, TRACK_ORDER_6]
+
+DIRECTED_GRAPHS = []
+
+for keypoints in TRACK_ORDERS:
+    es = [EDGES_BY_NAME.index([a, b]) for a, b in pairwise(keypoints)]
+    ts = [KEYPOINT_NAMES.index(b) for a, b in pairwise(keypoints)]
+    DIRECTED_GRAPHS.append([es, ts])
+
+EPSILON = 1e-6
+
+
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(models.__dict__[name]))
 
-parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
+parser = argparse.ArgumentParser(description='PyTorch PoseProposalNet Training')
+parser.add_argument("-d", "--file", help="json file path")
+parser.add_argument("-img", "--root_dir", help="path to train2017 or val2018")
+
 parser.add_argument('data', metavar='DIR',
                     help='path to dataset')
 parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet18',
@@ -104,7 +193,6 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
                          'multi node data parallel training')
 
 # Network implementation
-EPSILON = 1e-6
 
 def parse_size(text):
     w, h = text.split('x')
@@ -125,9 +213,9 @@ def area(bbox):
 def intersection(bbox0, bbox1):
     x0, y0, w0, h0 = bbox0
     x1, y1, w1, h1 = bbox1
-    
-    w = F.relu(min(x0 + w0 / 2, x1 + w1 / 2) - max(x0 - w0 / 2, x1 - w1 / 2)) 
-    h = F.relu(min(y0 + h0 / 2, y1 + h1 / 2) - max(y0 - h0 / 2, y1 - h1 / 2)) 
+
+    w = F.relu(torch.min(x0 + w0 / 2, x1 + w1 / 2) - torch.max(x0 - w0 / 2, x1 - w1 / 2))
+    h = F.relu(torch.min(y0 + h0 / 2, y1 + h1 / 2) - torch.max(y0 - h0 / 2, y1 - h1 / 2))
 
     return w * h 
 
@@ -139,161 +227,449 @@ def iou(bbox0, bbox1):
 
     return intersect / (area0 + area1 - intersect + EPSILON)
 
+def max_delta(delta1, delta2):
+    batch = delta.shape[0]
+
+    max_val = torch.max(delta1, delta2)
+
+def show_landmarks(image, keypoints, bbox):
+    """Show image with keypoints"""
+    print("show_landmarks:", type(image), image.dtype)
+    plt.imshow(image)
+
+    # change 0 to nan
+    x = keypoints[:,0]
+    x[x==0] = np.nan
+
+    y = keypoints[:,1]
+    y[y==0] = np.nan
+    cx1,cy1,w,h = bbox
+    rect = patches.Rectangle((cx1-w//2,cy1-h//2),w,h,linewidth=2,edgecolor='b',facecolor='none')
+    plt.gca().add_patch(rect)
+    plt.scatter(keypoints[:, 0], keypoints[:, 1], s=30, marker='.', c='r')
+    plt.pause(0.001)  # pause a bit so that plots are updated
+
+
+class IAA(object):
+    def __init__(self, output_size):
+        assert isinstance(output_size, (int, tuple))
+        self.output_size = output_size
+
+    def __call__(self, sample):
+        image, keypoints, bbox = sample['image'], sample['keypoints'][:,[0,1]], sample['bbox']
+        h, w = image.shape[:2]
+
+        #filter existed keypoints , aka exclude zero value
+        kps_coords = []
+        kps = []
+        keypoints = keypoints.tolist()
+        for temp in keypoints:
+            if temp[0] >0 and temp[1] >0: 
+                kps_coords.append((temp[0],temp[1]))
+
+        for kp_x, kp_y in kps_coords:
+            kps.append(ia.Keypoint(kp_x, kp_y))
+
+        bbs = ia.BoundingBoxesOnImage([
+            ia.BoundingBox(x1 = bbox[0]-bbox[2]//2, 
+                        y1=bbox[1]-bbox[3]//2,
+                        x2=bbox[0]+bbox[2]//2, 
+                        y2=bbox[1]+bbox[3]//2)
+            ], shape=image.shape[:2])
+        kps_oi = ia.KeypointsOnImage(kps, shape= image.shape[:2])
+
+        seq = iaa.Sequential([
+            iaa.Affine(
+                rotate=(-40, 40),
+                scale=(0.35, 2.5)
+            ), # rotate by exactly 10deg and scale to 50-70%, affects keypoints
+            iaa.Multiply((1.2, 1.5)), # change brightness, doesn't affect keypoints
+            iaa.Fliplr(0.5),
+            iaa.Flipud(0.5),
+            iaa.CropAndPad(
+                percent=(-0.2, 0.2),
+                pad_mode=["constant", "edge"],
+                pad_cval=(0, 128)
+            ),
+            iaa.Scale({"height": self.output_size[0], "width": self.output_size[1]})
+        ])
+        seq_det = seq.to_deterministic()
+        image_aug = seq_det.augment_images([image])[0]
+        keypoints_aug = seq_det.augment_keypoints([kps_oi])[0]
+        bbs_aug = seq_det.augment_bounding_boxes([bbs])[0]
+    
+        # update keypoints and bbox
+        cnt = 0 
+        for temp in keypoints:
+            if temp[0] >0 and temp[1] >0: 
+                temp[0] = keypoints_aug.keypoints[cnt].x
+                temp[1] = keypoints_aug.keypoints[cnt].y
+                cnt +=1
+
+        keypoints = np.asarray(keypoints, dtype= np.float32)
+        new_bbox = []
+        for i in range(len(bbs_aug.bounding_boxes)):
+            temp = bbs_aug.bounding_boxes[i]
+            new_bbox.append((temp.x2+temp.x1)/2)
+            new_bbox.append((temp.y2+temp.y1)/2)
+            new_bbox.append((temp.x2-temp.x1))
+            new_bbox.append((temp.y2-temp.y1))
+
+        img = transform.resize(image_aug, (384, 384))
+        return {'image': img, 'keypoints': keypoints, 'bbox': new_bbox}
+
+
+class ToTensor(object):
+    """Convert ndarrays in sample to Tensors."""
+
+    def __call__(self, sample):
+        image, keypoints, bbox = sample['image'], sample['keypoints'], sample['bbox']
+
+        # swap color axis because
+        # PIL  image 
+        # numpy image: H x W x C
+        # torch image: C X H X W
+        image = np.array(image).transpose((2, 0, 1))
+        image = torch.from_numpy(image)
+        image = image.float()
+        return {'image': image,
+                'keypoints': torch.from_numpy(keypoints),
+                'bbox': torch.from_numpy(np.asarray(bbox))}
+
+ 
+class KeypointsDataset(Dataset):
+    def __init__(self, json_file, root_dir, transform=None):
+        """
+        Args:
+            json_file (string): path to the json file with annotations
+            root_dir(string): path to Directory for images
+            transform (optional):  transform to be applied on a sample.
+        """
+        json_data = open(json_file)
+        self.annotations = json.load(json_data)["annotations"]
+        self.root_dir = root_dir
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.annotations)
+
+    def __getitem__(self, idx):
+        img_name = os.path.join(self.root_dir, self.annotations[idx]['file_name'])
+        image = io.imread(img_name).astype(np.uint8)
+        # center_x, center_y, visible_coco, width, height
+        keypoints = np.array(self.annotations[idx]["keypoints"], dtype='float32').reshape(-1, 5)
+        bbox = self.annotations[idx]['bbox']    # [center_x, center_y , width, height]
+        sample = {'image': image, 'keypoints': keypoints, 'bbox': bbox}
+
+        if self.transform:
+            sample = self.transform(sample)
+
+        return sample
+
+#network
 class PoseProposalNet(nn.Module):
-    def __init__(self, backbone):
+    def __init__(self, backbone, insize=(384,384), outsize=(32,32), keypoint_names = KEYPOINT_NAMES , local_grid_size= (9,9), edges = EDGES ):
         super(PoseProposalNet, self).__init__()
         self.insize = insize
         self.keypoint_names = keypoint_names
         self.edges = edges
         self.local_grid_size = local_grid_size
-        self.dtype = dtype
-        self.lambda_resp = lambda_resp
-        self.lambda_iou = lambda_iou
-        self.lambda_coor = lambda_coor
-        self.lambda_size = lambda_size
-        self.lambda_limb = lambda_limb
-        self.parts_scale = np.array(parts_scale)
-        self.instance_scale = np.array(instance_scale)
+        #self.dtype = dtype
 
-        self.outsize = self.get_outsize()
+        #self.instance_scale = np.array(instance_scale)
+
+        #self.outsize = self.get_outsize()
+        self.outsize = outsize
         inW, inH = self.insize
         outW, outH = self.outsize
+        sW, sH = self.local_grid_size
         self.gridsize = (int(inW / outW), int(inH / outH))
+        self.lastsize = 6*(len(self.keypoint_names))+(sW)*(sH)*len(self.edges)
 
-	#ResNet w/o avgpool&fc
+        #ResNet w/o avgpool&fc
         self.backbone = backbone
 
         # modified cnn layer
-        self.conv1 = nn.Conv2d(512, 512, kernel_size=3, stride=1)
-        self.conv2 = nn.Conv2d(512, 512, kernel_size=3, stride=1)
-        self.conv3 = nn.Conv2d(512, (6*(15+1)+9*9*15), kernel_size=3, stride=1)
+        self.conv1 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=3//2, bias=False)
+        #TODO batch norm
+        self.conv2 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=3//2, bias=False)
+        self.conv3 = nn.Conv2d(512, self.lastsize, kernel_size=1, stride=1)
+        #self.conv3 = nn.Conv2d(512, 1311, kernel_size=1, stride=1)
+        self.linear = nn.Linear(144,1024)
         self.lRelu = nn.LeakyReLU(0.1)
 
 
     def forward(self, input):
+
+        print("input type:", input.dtype)
         # load resnet 
         resnet_out = self.backbone(input)
         conv1_out = self.conv1(resnet_out)
+        #TODO add batchnorm
         lRelu1 = self.lRelu(conv1_out)
 
         conv2_out = self.conv2(lRelu1)
         lRelu2 = self.lRelu(conv2_out)
 
         conv3_out = self.conv3(lRelu2)
-        out = self.linear(conv3_out)
+        print("conv3_out:", conv3_out[0][0][0].shape)
+        print("conv3_out:", conv3_out[0][0][0])
+
+        out = self.linear(conv3_out.reshape(-1,self.lastsize, 144)).reshape(-1,self.lastsize, 32,32)
+        print("network out type:", out.dtype)
 
         return out
 
-    def get_outsize(self):
-        inp = np.zeros((2, 3, self.insize[1], self.insize[0]), dtype = np.float32)
-        out = self.forward(inp)
-        _, _, h, w = out.shape
-        return w, h
 
-    def restore_xy(self, xp, y):
-        #xp = get_array_module(x)
+#loss function
+class PPNLoss(nn.Module):
+    def __init__(self, batch_size=4,
+                insize=(384,384),
+                outsize=(32,32),
+                keypoint_names = KEYPOINT_NAMES , local_grid_size= (9,9), edges = EDGES,
+                width_multiplier=1.0,
+                lambda_resp=0.25,
+                lambda_iou=1.0,
+                lambda_coor=5.0,
+                lambda_size=5.0,
+                lambda_limb=0.5
+                ):
+        super(PPNLoss, self).__init__()
+        print("PPLloss init")
+        self.batch_size = batch_size
+        self.insize = insize
+        self.keypoint_names = keypoint_names
+        self.edges = edges
+        self.local_grid_size = local_grid_size
+
+        self.dtype = np.float32
+
+        #TODO implement get_outsize
+        #self.outsize = self.get_outsize()
+        self.outsize = outsize
+        inW, inH = self.insize
+        outW, outH = self.outsize
+        sW, sH = self.local_grid_size
+        self.gridsize = (int(inW / outW), int(inH / outH))
+
+        #set loss parameters
+        self.lambda_resp = lambda_resp
+        self.lambda_iou = lambda_iou
+        self.lambda_coor = lambda_coor
+        self.lambda_size = lambda_size
+        self.lambda_limb = lambda_limb
+        print("PPLloss init done")
+
+    def restore_xy(self, x, y):
         gridW, gridH = self.gridsize
         outW, outH = self.outsize
-        X, Y = xp.meshgrid(xp.arange(outW, dtype=xp.float32), xp.arange(outH, dtype=xp.float32))
+        X, Y = torch.Tensor(np.meshgrid(np.arange(outW, dtype=np.float32), np.arange(outH, dtype=np.float32))).cuda()
         return (x + X) * gridW, (y + Y) * gridH
-
     def restore_size(self, w, h):
         inW, inH = self.insize
         return inW * w, inH * h
 
-    def encode(self, in_data):
-        image = in_data['image']
-        keypoints = in_data['keypoints']
-        bbox = in_data['bbox']
-        num_keys = in_data['num_keys']
+    # forward input
+    def forward(self, feature_map, bbox, target):
+        #encoding target
+        delta, max_delta_ij, tx, ty, tw, th, te = self.encode(bbox, target)
+
+        K = len(self.keypoint_names)
+        B = self.batch_size
+        #B, _, _, _ = image.shape
+        outW, outH = self.outsize
+
+        #feature_map = self.forward(image)      
+        print("feature_map shape:", feature_map.shape)
+        #loss function with torch
+        resp = feature_map[:, 0 * K:1 * K, :, :]
+        conf = feature_map[:, 1 * K:2 * K, :, :]
+        x = feature_map[:, 2 * K:3 * K, :, :]
+        y = feature_map[:, 3 * K:4 * K, :, :]
+        w = feature_map[:, 4 * K:5 * K, :, :]
+        h = feature_map[:, 5 * K:6 * K, :, :]
+        e = feature_map[:, 6 * K:, :, :].reshape((
+            B,
+            len(self.edges),
+            self.local_grid_size[1], self.local_grid_size[0],
+            outH, outW
+        ))
+#        print("resp", resp.dtype, resp.shape)
+#        print("conf", conf.dtype, conf.shape)
+#        print("sliced x", x.dtype, x.shape)
+#        print("sliced y", y.dtype, y.shape)
+#        print("sliced w", w.dtype, w.shape)
+#        print("sliced h", h.dtype, h.shape)
+#        print("sliced e", e.dtype, e.shape)
+#        print("feature_map", feature_map.dtype)
+        (rx, ry), (rw, rh) = self.restore_xy(x, y), self.restore_size(w, h)
+        (rtx, rty), (rtw, rth) = self.restore_xy(tx, ty), self.restore_size(tw, th)
+        #torch.set_printoptions(threshold=10000)
+        #print("tx:", tx.shape, tx[0][0])
+        #print("rtx:", rtx.shape, rtx[0][0])
+        ious = iou((rx, ry, rw, rh), (rtx, rty, rtw, rth))
+
+        # add weight where can't find keypoint
+        #xp = get_array_module(max_delta_ij)
+        zero_place = torch.zeros(max_delta_ij.shape).cuda()
+        zero_place[max_delta_ij < 0.5] = 0.0005
+        weight_ij = torch.min(max_delta_ij + zero_place,
+                                torch.ones(zero_place.shape, dtype=torch.float32).cuda())
+
+        # add weight where can't find keypoint
+        #zero_place = np.zeros(delta.shape).astype(self.dtype)
+        zero_place = torch.zeros(delta.shape).cuda()
+        zero_place[delta < 0.5] = 0.0005
+        #weight = np.minimum(delta + zero_place, 1.0)
+        weight = torch.min(delta + zero_place,
+                                torch.ones(zero_place.shape, dtype=torch.float32).cuda())
+
+        half = torch.zeros(delta.shape).cuda()
+        half[delta < 0.5] = 0.5
+
+        loss_resp = torch.sum((resp - delta)**2, (2,3))
+        loss_iou = torch.sum(delta * (conf - ious)**2, (2,3))
+        loss_coor = torch.sum(weight * ((x - tx - half)**2 + (y - ty - half)**2), (2,3))
+        loss_size = torch.sum(weight * ((torch.sqrt(torch.abs(w + EPSILON)) - torch.sqrt(torch.abs(tw + EPSILON)))**2 +
+                                    (torch.sqrt(torch.abs(h + EPSILON)) - torch.sqrt(torch.abs(th + EPSILON)))**2 ), (2,3))
+        loss_limb = torch.sum(weight_ij * (e - te)**2, (2,3,4,5))
+
+        loss_resp = torch.mean(loss_resp)
+        loss_iou = torch.mean(loss_iou)
+        loss_coor = torch.mean(loss_coor)
+        loss_size = torch.mean(loss_size)
+        loss_limb = torch.mean(loss_limb)
+
+        loss = self.lambda_resp * loss_resp + \
+            self.lambda_iou * loss_iou + \
+            self.lambda_coor * loss_coor + \
+            self.lambda_size * loss_size + \
+            self.lambda_limb * loss_limb
+        #print("loss:", loss)
+        #print("loss_resp:", loss_resp)
+        #print("loss_iou:", loss_iou)
+        #print("loss_coor:", loss_coor)
+        #print("loss_size:", loss_size)
+        #print("loss_limb:", loss_limb)
+        return loss
+
+
+    def encode(self, bbox, keypoints):
+        #in_data is Tensor
+        #image = in_data['image'] # batch x channel x width x height
+        #keypoints = in_data['keypoints'] # batch x keypoints x [ x, y, v, w, h ]
+
+        #print("keypoints size:", keypoints.size())
+        keypoints_xy = torch.narrow(keypoints, 2,0,2)
+        #print("keypoints xy size:", keypoints_xy.size())
+        keypoints_wh = torch.narrow(keypoints, 2,3,2)
+        #print("keypoints wh size:", keypoints_wh.size())
+        visible = torch.narrow(keypoints, 2,2,1)
+
+        B = self.batch_size
+
+        #bbox = in_data['bbox'] # [x1, y1, w, h]
+
+        #is_labeled = in_data['is_labeled']
+        #dataset_type = in_data['dataset_type']
+        #is_visible = in_data['is_visible']
 
         inW, inH = self.insize
         outW, outH = self.outsize
         gridW, gridH = self.gridsize
         K = len(self.keypoint_names)
 
-        delta = np.zeros((K, outH, outW), dtype=np.float32)
-        tx = np.zeros((K, outH, outW), dtype=np.float32)
-        ty = np.zeros((K, outH, outW), dtype=np.float32)
-        tw = np.zeros((K, outH, outW), dtype=np.float32)
-        th = np.zeros((K, outH, outW), dtype=np.float32)
-        te = np.zeros((
+        delta = torch.zeros((B, K, outH, outW), dtype=torch.float32).cuda()
+        tx = torch.zeros((B, K, outH, outW), dtype=torch.float32).cuda()
+        ty = torch.zeros((B, K, outH, outW), dtype=torch.float32).cuda()
+        tw = torch.zeros((B, K, outH, outW), dtype=torch.float32).cuda()
+        th = torch.zeros((B, K, outH, outW), dtype=torch.float32).cuda()
+        te = torch.zeros((B,
             len(self.edges),
             self.local_grid_size[1], self.local_grid_size[0],
-            outH, outW), dtype=np.float32)
+            outH, outW),
+            dtype=torch.float32).cuda()
         # Set delta^i_k
-        for (x, y, w, h), points, labeled in zip(bbox, keypoints, is_labeled):
-            if dataset_type == 'mpii':
-                partsW, partsH = self.parts_scale * math.sqrt(w * w + h * h)
-                instanceW, instanceH = self.instance_scale * math.sqrt(w * w + h * h)
-            elif dataset_type == 'coco':
-                partsW, partsH = self.parts_scale * math.sqrt(w * w + h * h)
-                instanceW, instanceH = w, h
-            else:
-                raise ValueError("must be 'mpii' or 'coco' but actual {}".format(dataset_type))
-            cy = y + h / 2
-            cx = x + w / 2
-            points = [[cy, cx]] + list(points)
-            labeled = [True] + list(labeled)
-            for k, (yx, l) in enumerate(zip(points, labeled)):
-                if not l:
+        for idx, ((box_x, box_y, box_w, box_h), points, pointswh, v) in enumerate(zip(bbox, keypoints_xy, keypoints_wh, visible)):
+            # mpi bbox instance converted to coco bbox instance format (total human)
+
+            # parts already defined by segmentation data and number of keypoints which encoded in keypoints objects
+            # process each idx-th batch
+            points =  list([torch.tensor([box_x, box_y], dtype=torch.float32).cuda()]) + list(points)
+            pointswh =  list([torch.tensor([box_w, box_h], dtype=torch.float32).cuda()]) + list(pointswh)
+            visibled = list(torch.tensor([[2.]]).cuda()) + list(v)
+
+            #print("visibled:", visibled) 
+            #print("points:", points)
+            #print("pointswh:", pointswh)
+
+            for k, (xy, pwh, v) in enumerate(zip(points, pointswh, visibled)):
+                #print(k, ", v:", v)
+                if v <= 0:  # filtered unlabeled 
                     continue
-                cy = yx[0] / gridH
-                cx = yx[1] / gridW
+                cx = xy[0] / gridW
+                cy = xy[1] / gridH
+
+                #find appropriate grid which include center point
                 ix, iy = int(cx), int(cy)
-                sizeW = instanceW if k == 0 else partsW
-                sizeH = instanceH if k == 0 else partsH
+                sizeW, sizeH = pwh
+                #print("ix,iy:", ix, iy, outW, outH) 
                 if 0 <= iy < outH and 0 <= ix < outW:
-                    delta[k, iy, ix] = 1
-                    tx[k, iy, ix] = cx - ix
-                    ty[k, iy, ix] = cy - iy
-                    tw[k, iy, ix] = sizeW / inW
-                    th[k, iy, ix] = sizeH / inH
+                    #print("k,iy,ix:", k, iy, ix)
+                    delta[idx, k, iy, ix] = 1
+                    tx[idx, k, iy, ix] = cx - ix
+                    ty[idx, k, iy, ix] = cy - iy
+                    tw[idx, k, iy, ix] = sizeW / inW
+                    th[idx, k, iy, ix] = sizeH / inH
 
+            #np.set_printoptions(threshold=np.nan)
             for ei, (s, t) in enumerate(self.edges):
-                if not labeled[s]:
+                if visibled[s] <= 0:
                     continue
-                if not labeled[t]:
-                    continue
-                src_yx = points[s]
-                tar_yx = points[t]
-                iyx = (int(src_yx[0] / gridH), int(src_yx[1] / gridW))
-                jyx = (int(tar_yx[0] / gridH) - iyx[0] + self.local_grid_size[1] // 2,
-                       int(tar_yx[1] / gridW) - iyx[1] + self.local_grid_size[0] // 2)
-
-                if iyx[0] < 0 or iyx[1] < 0 or iyx[0] >= outH or iyx[1] >= outW:
-                    continue
-                if jyx[0] < 0 or jyx[1] < 0 or jyx[0] >= self.local_grid_size[1] or jyx[1] >= self.local_grid_size[0]:
+                if visibled[t] <= 0:
                     continue
 
-                te[ei, jyx[0], jyx[1], iyx[0], iyx[1]] = 1
+                src_xy = points[s]
+                tar_xy = points[t]
+                ixy = (int(src_xy[0] / gridW), int(src_xy[1] / gridH))
+                jxy = (int(tar_xy[0] / gridW) - ixy[0] + self.local_grid_size[0] // 2,
+                       int(tar_xy[1] / gridH) - ixy[1] + self.local_grid_size[1] // 2)
+
+                if ixy[0] < 0 or ixy[1] < 0 or ixy[0] >= outW or ixy[1] >= outH:
+                    continue
+                if jxy[0] < 0 or jxy[1] < 0 or jxy[0] >= self.local_grid_size[0] or jxy[1] >= self.local_grid_size[1]:
+                    continue
+
+                # edge, tar_y, tar_x, start_y, start_x
+                te[idx, ei, jxy[1], jxy[0], ixy[1], ixy[0]] = 1
 
         # define max(delta^i_k1, delta^j_k2) which is used for loss_limb
-        max_delta_ij = np.ones((len(self.edges),
-                                outH, outW,
-                                self.local_grid_size[1], self.local_grid_size[0]), dtype=np.float32)
-        or_delta = np.zeros((len(self.edges), outH, outW), dtype=np.float32)
-        for ei, (s, t) in enumerate(self.edges):
-            or_delta[ei] = np.minimum(delta[s] + delta[t], 1)
-        mask = F.max_pooling_2d(np.expand_dims(or_delta, axis=0),
-                                ksize=(self.local_grid_size[1], self.local_grid_size[0]),
+        or_delta = torch.zeros((B, len(self.edges), outH, outW), dtype=torch.float32).cuda()
+        zeropad = nn.ZeroPad2d((self.local_grid_size[0]//2, self.local_grid_size[0]//2, self.local_grid_size[1]//2, self.local_grid_size[1]//2))
+        padded_delta = zeropad(delta)
+
+        for idx in range(self.batch_size):
+            for ei, (s, t) in enumerate(self.edges):
+                or_delta[idx][ei] = torch.min(delta[idx][s] + delta[idx][t],
+                                torch.ones(delta[idx][s].shape, dtype=torch.float32).cuda())
+
+        mask = nn.MaxPool2d((self.local_grid_size[1], self.local_grid_size[0]), #kernel_size
                                 stride=1,
-                                pad=(self.local_grid_size[1] // 2, self.local_grid_size[0] // 2))
-        mask = np.squeeze(mask.array, axis=0)
-        for index, _ in np.ndenumerate(mask):
-            max_delta_ij[index] *= mask[index]
-        max_delta_ij = max_delta_ij.transpose(0, 3, 4, 1, 2)
+                                padding=(self.local_grid_size[1] // 2, self.local_grid_size[0] // 2)).cuda()
+        m = mask(or_delta)
+        max_delta_ij = m.unsqueeze_(-1).expand(-1,-1,-1,-1,self.local_grid_size[0]).unsqueeze_(-1).expand(-1,-1,-1,-1,-1,self.local_grid_size[1])
 
-        # preprocess image
-        image = self.feature_layer.prepare(image)
+        max_delta_ij = max_delta_ij.permute(0,1,4,5,2,3)
 
-        return image, delta, max_delta_ij, tx, ty, tw, th, te
+        return delta, max_delta_ij, tx, ty, tw, th, te
 
 
-best_acc1 = 0
+
+best_loss = float("inf")
 
 def main():
     args = parser.parse_args()
+
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -325,7 +701,7 @@ def main():
 
 
 def main_worker(gpu, ngpus_per_node, args):
-    global best_acc1
+    global best_loss
     args.gpu = gpu
 
     if args.gpu is not None:
@@ -339,42 +715,42 @@ def main_worker(gpu, ngpus_per_node, args):
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
                                 world_size=args.world_size, rank=args.rank)
 
+    root_dir = args.root_dir
+
     # Data loading code
-    traindir = os.path.join(args.data, 'train')
-    valdir = os.path.join(args.data, 'val')
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
 
-    train_dataset = datasets.ImageFolder(
-        traindir,
-        transforms.Compose([
-            transforms.RandomResizedCrop(224),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            normalize,
-        ]))
+    train_dataset = KeypointsDataset(json_file = args.train_file, root_dir = args.root_dir,
+                    transform=transforms.Compose([
+                        normalize,
+                        IAA((384,384)),
+                        ToTensor()
+                    ]))
 
+    
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
     else:
         train_sampler = None
 
-    train_loader = torch.utils.data.DataLoader(
+
+    train_loader = DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler)
 
+    val_dataset = KeypointsDataset(json_file = args.val_file, root_dir = args.root_dir,
+                transform=transforms.Compose([
+                    Rescale((384,384)),
+                    #RandomRotate(),
+                    ToTensor()
+                ]))
+
+
     val_loader = torch.utils.data.DataLoader(
-        datasets.ImageFolder(valdir, transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            normalize,
-        ])),
+        val_dataset,
         batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True)
-
-
-
 
 
     # create model
@@ -388,19 +764,6 @@ def main_worker(gpu, ngpus_per_node, args):
     # Detach under avgpoll layer in Resnet
     modules = list(model.children())[:-2]
     model = nn.Sequential(*modules)
-
-    #Not sure
-    #for p in model.parameters():
-    #    p.requires_grad = False
-
-    # Get resnet features for random image_
-
-    #    img = torch.Tensor(3, 224, 224).normal_() # random image
-    #    img = torch.unsqueeze(img, 0)  # Add dimension 0 to tensor  
-    #    img_var = Variable(img) # assign it to a variable
-    #    features_var = resnet152(img_var) # get the output from the last hidden layer of the pretrained resnet
-    #    features = features_var.data # get the tensor out of the variable
-
     model = PoseProposalNet(model)
 
     if args.distributed:
@@ -434,7 +797,9 @@ def main_worker(gpu, ngpus_per_node, args):
 
     # define loss function (criterion) and optimizer
     #TODO define custom loss 
-    criterion = nn.CrossEntropyLoss().cuda(args.gpu)
+    #criterion = nn.CrossEntropyLoss().cuda(args.gpu)
+
+    criterion = PPNLoss().cuda(args.gpu)
 
     optimizer = torch.optim.SGD(model.parameters(), args.lr,
                                 momentum=args.momentum,
@@ -446,7 +811,7 @@ def main_worker(gpu, ngpus_per_node, args):
             print("=> loading checkpoint '{}'".format(args.resume))
             checkpoint = torch.load(args.resume)
             args.start_epoch = checkpoint['epoch']
-            best_acc1 = checkpoint['best_acc1']
+            best_loss = checkpoint['best_loss']
             model.load_state_dict(checkpoint['state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
             print("=> loaded checkpoint '{}' (epoch {})"
@@ -465,25 +830,25 @@ def main_worker(gpu, ngpus_per_node, args):
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
-        adjust_learning_rate(optimizer, epoch, args)
 
         # train for one epoch
         train(train_loader, model, criterion, optimizer, epoch, args)
 
         # evaluate on validation set
-        acc1 = validate(val_loader, model, criterion, args)
+        epoch_loss = validate(val_loader, model, criterion, args)
 
         # remember best acc@1 and save checkpoint
-        is_best = acc1 > best_acc1
-        best_acc1 = max(acc1, best_acc1)
+        is_best = epoch_loss < best_loss
+        best_loss = min(epoch_loss, best_loss)
 
         if not args.multiprocessing_distributed or (args.multiprocessing_distributed
                 and args.rank % ngpus_per_node == 0):
+            print("checkpoints is saved!!!")
             save_checkpoint({
                 'epoch': epoch + 1,
                 'arch': args.arch,
                 'state_dict': model.state_dict(),
-                'best_acc1': best_acc1,
+                'best_loss': best_loss,
                 'optimizer' : optimizer.state_dict(),
             }, is_best)
 
@@ -492,30 +857,33 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
-    top1 = AverageMeter()
-    top5 = AverageMeter()
+    #top1 = AverageMeter()
+    #top5 = AverageMeter()
 
     # switch to train mode
     model.train()
 
     end = time.time()
-    for i, (input, target) in enumerate(train_loader):
+    for i, target in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
 
+        adjust_learning_rate(optimizer, i, args)
         if args.gpu is not None:
-            input = input.cuda(args.gpu, non_blocking=True)
-        target = target.cuda(args.gpu, non_blocking=True)
+            img = target['image'].cuda(args.gpu, non_blocking=True)
+            bbox = target['bbox'].cuda(args.gpu, non_blocking=True)
+            label = target['keypoints'].cuda(args.gpu, non_blocking=True)
 
         # compute output
-        output = model(input)
-        loss = criterion(output, target)
+        output = model(img)
+        loss = criterion(output, bbox, label)
 
         # measure accuracy and record loss
-        acc1, acc5 = accuracy(output, target, topk=(1, 5))
-        losses.update(loss.item(), input.size(0))
-        top1.update(acc1[0], input.size(0))
-        top5.update(acc5[0], input.size(0))
+        #TODO implement accuracy
+        #acc1, acc5 = accuracy(output, target, topk=(1, 5))
+        losses.update(loss.item(), img.size(0))
+        #top1.update(acc1[0], img.size(0))
+        #top5.update(acc5[0], img.size(0))
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
@@ -527,6 +895,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         end = time.time()
 
         if i % args.print_freq == 0:
+            '''
             print('Epoch: [{0}][{1}/{2}]\t'
                   'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                   'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
@@ -535,39 +904,57 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                   'Acc@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
                    epoch, i, len(train_loader), batch_time=batch_time,
                    data_time=data_time, loss=losses, top1=top1, top5=top5))
+            '''
+            print('Epoch: [{0}][{1}/{2}]\t'
+                  'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                  'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
+                  'Loss {loss.val:.4f} ({loss.avg:.4f})'.format(
+                   epoch, i, len(train_loader), batch_time=batch_time,
+                   data_time=data_time, loss=losses))
+
 
 
 def validate(val_loader, model, criterion, args):
     batch_time = AverageMeter()
     losses = AverageMeter()
-    top1 = AverageMeter()
-    top5 = AverageMeter()
+    #top1 = AverageMeter()
+    #top5 = AverageMeter()
 
     # switch to evaluate mode
     model.eval()
 
     with torch.no_grad():
         end = time.time()
-        for i, (input, target) in enumerate(val_loader):
+
+        for i, target in enumerate(val_loader):
             if args.gpu is not None:
-                input = input.cuda(args.gpu, non_blocking=True)
-            target = target.cuda(args.gpu, non_blocking=True)
+                img = target['image'].cuda(args.gpu, non_blocking=True)
+                bbox = target['bbox'].cuda(args.gpu, non_blocking=True)
+                label = target['keypoints'].cuda(args.gpu, non_blocking=True)
 
             # compute output
-            output = model(input)
+            output = model(img)
             loss = criterion(output, target)
 
             # measure accuracy and record loss
-            acc1, acc5 = accuracy(output, target, topk=(1, 5))
-            losses.update(loss.item(), input.size(0))
-            top1.update(acc1[0], input.size(0))
-            top5.update(acc5[0], input.size(0))
+            #acc1, acc5 = accuracy(output, target, topk=(1, 5))
+            losses.update(loss.item(), img.size(0))
+            #top1.update(acc1[0], img.size(0))
+            #top5.update(acc5[0], img.size(0))
 
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
 
             if i % args.print_freq == 0:
+
+                print('Epoch: [{0}][{1}/{2}]\t'
+                      'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                      'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
+                      'Loss {loss.val:.4f} ({loss.avg:.4f})'.format(
+                       epoch, i, len(train_loader), batch_time=batch_time,
+                       data_time=data_time, loss=losses))
+                '''
                 print('Test: [{0}/{1}]\t'
                       'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                       'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
@@ -575,11 +962,12 @@ def validate(val_loader, model, criterion, args):
                       'Acc@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
                        i, len(val_loader), batch_time=batch_time, loss=losses,
                        top1=top1, top5=top5))
+                '''
+        #print(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'
+        #      .format(top1=top1, top5=top5))
 
-        print(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'
-              .format(top1=top1, top5=top5))
-
-    return top1.avg
+    #return top1.avg
+    return losses.avg
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
@@ -606,13 +994,13 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
 
-def adjust_learning_rate(optimizer, epoch, args):
+def adjust_learning_rate(optimizer, iters, args):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
-    lr = args.lr * (0.1 ** (epoch // 30))
+    lr = 0.007 * (1  - iters/260000)
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
-
+#TODO ignore accuracy
 def accuracy(output, target, topk=(1,)):
     """Computes the accuracy over the k top predictions for the specified values of k"""
     with torch.no_grad():
