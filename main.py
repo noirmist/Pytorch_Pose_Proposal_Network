@@ -233,9 +233,16 @@ def iou(bbox0, bbox1):
     return intersect / (area0 + area1 - intersect + EPSILON)
 
 
-def show_landmarks(image, keypoints, bbox):
+def show_landmarks(image, keypoints, bbox, fname):
     """Show image with keypoints"""
-    print("show_landmarks:", type(image), image.dtype)
+    #print("show_landmarks:", type(image), image.dtype)
+
+    image = image.numpy().astype(np.uint8)
+    image = np.array(image).transpose((1, 2, 0))
+    bboxes = bbox.numpy()
+    keypoints = keypoints.reshape(-1,2).numpy()
+    
+    fig = plt.figure()
     plt.imshow(image)
 
     # change 0 to nan
@@ -244,12 +251,15 @@ def show_landmarks(image, keypoints, bbox):
 
     y = keypoints[:,1]
     y[y==0] = np.nan
-    cx1,cy1,w,h = bbox
-    rect = patches.Rectangle((cx1-w//2,cy1-h//2),w,h,linewidth=2,edgecolor='b',facecolor='none')
-    plt.gca().add_patch(rect)
-    plt.scatter(keypoints[:, 0], keypoints[:, 1], s=30, marker='.', c='r')
-    plt.pause(0.001)  # pause a bit so that plots are updated
 
+    for (cx1,cy1,w,h) in bboxes:
+        rect = patches.Rectangle((cx1-w//2,cy1-h//2),w,h,linewidth=2,edgecolor='b',facecolor='none')
+        plt.gca().add_patch(rect)
+
+    plt.scatter(keypoints[:, 0], keypoints[:, 1], marker='.', c='r')
+    plt.pause(0.0001)  # pause a bit so that plots are updated
+    plt.savefig("aug_img/"+fname) 
+    plt.close()
 
 class IAA(object):
     def __init__(self, output_size, mode):
@@ -267,13 +277,13 @@ class IAA(object):
         #filter existed keypoints , aka exclude zero value
         kps_coords = []
         kps = []
-        keypoints = keypoints.tolist()
+        #keypoints = keypoints.reshape(-1,2).tolist()
         for temp in keypoints:
             if temp[0] >0 and temp[1] >0: 
                 kps_coords.append((temp[0],temp[1]))
 
         for kp_x, kp_y in kps_coords:
-            kps.append(ia.Keypoint(kp_x, kp_y))
+            kps.append(ia.Keypoint(x=kp_x, y=kp_y))
 
         box_list = []
         for bbox in bboxes:
@@ -282,15 +292,16 @@ class IAA(object):
                                 x2=bbox[0]+bbox[2]//2, 
                                 y2=bbox[1]+bbox[3]//2))
 
-        bbs = ia.BoundingBoxesOnImage(box_list, shape=image.shape[:2])
-        kps_oi = ia.KeypointsOnImage(kps, shape= image.shape[:2])
+        bbs = ia.BoundingBoxesOnImage(box_list, shape=image.shape)
+        kps_oi = ia.KeypointsOnImage(kps, shape=image.shape)
         if self.mode =='train':
             seq = iaa.Sequential([
                 iaa.Affine(
                     rotate=(-40, 40),
-                    scale=(0.25, 2.5)
+                    scale=(0.25, 2.5),
+                    fit_output=True
                 ), # random rotate by -40-40deg and scale to 35-250%, affects keypoints
-                iaa.Multiply((1.2, 1.5)), # change brightness, doesn't affect keypoints
+                iaa.Multiply((0.5, 1.5)), # change brightness, doesn't affect keypoints
                 iaa.Fliplr(0.5),
                 iaa.Flipud(0.5),
 #                iaa.CropAndPad(
@@ -300,13 +311,14 @@ class IAA(object):
 #                ),
                 iaa.Scale({"height": self.output_size[0], "width": self.output_size[1]})
             ])
+
         else:
             seq = iaa.Sequential([
                 iaa.Affine(
                     rotate=(-40, 40),
                     scale=(0.25, 2.5)
                 ), # random rotate by -40-40deg and scale to 35-250%, affects keypoints
-                iaa.Multiply((0.5, 1.5)), # change brightness, doesn't affect keypoints
+                iaa.Multiply((0.8, 1.5)), # change brightness, doesn't affect keypoints
                 iaa.Fliplr(0.5),
                 iaa.Flipud(0.5),
                 iaa.Scale({"height": self.output_size[0], "width": self.output_size[1]})
@@ -316,7 +328,7 @@ class IAA(object):
         image_aug = seq_det.augment_images([image])[0]
         keypoints_aug = seq_det.augment_keypoints([kps_oi])[0]
         bbs_aug = seq_det.augment_bounding_boxes([bbs])[0]
-        bbs_aug = bbs_aug.remove_out_of_image().cut_out_of_image() 
+        bbs_aug = bbs_aug.remove_out_of_image().clip_out_of_image() 
 
 
         # update keypoints and bbox
@@ -324,8 +336,8 @@ class IAA(object):
         for temp in keypoints:
             if temp[0] >0 and temp[1] >0:
                 # ignore outside keypoints
-                if keypoints_aug.keypoints[cnt].x >0 and keypoints_aug.keypoints[cnt].x < image_aug.shape[0] and \
-                    keypoints_aug.keypoints[cnt].y >0 and keypoints_aug.keypoints[cnt].y < image_aug.shape[1]:
+                if keypoints_aug.keypoints[cnt].x >0 and keypoints_aug.keypoints[cnt].x < image_aug.shape[1] and \
+                    keypoints_aug.keypoints[cnt].y >0 and keypoints_aug.keypoints[cnt].y < image_aug.shape[0]:
                     temp[0] = keypoints_aug.keypoints[cnt].x
                     temp[1] = keypoints_aug.keypoints[cnt].y
                 else:
@@ -347,10 +359,10 @@ class IAA(object):
         else:
             new_bbox = [0.0,0.0,0.0,0.0]
 
-        img = transform.resize(image_aug, (self.output_size[0], self.output_size[1]))
+        #img = transform.resize(image_aug, (self.output_size[0], self.output_size[1]))
         sample['keypoints'][:,[0,1]] = keypoints 
         #sample = {'image': image, 'keypoints': keypoints, 'bbox': bboxes, 'is_visible':is_visible, 'size': size}
-        return {'image': img, 'keypoints': sample['keypoints'], 'bbox': new_bboxes, 'is_visible':is_visible, 'size': size}
+        return {'image': image_aug, 'keypoints': sample['keypoints'], 'bbox': new_bboxes, 'is_visible':is_visible, 'size': size}
 
 
 class ToTensor(object):
@@ -371,7 +383,8 @@ class ToTensor(object):
         return {'image': image,
                 'keypoints': torch.from_numpy(keypoints),
                 'bbox': torch.from_numpy(np.asarray(bbox)),
-                'size': sample['size']}
+                'size': sample['size'],
+                'is_visible': sample['is_visible']}
 
  
 class KeypointsDataset(Dataset):
@@ -384,6 +397,7 @@ class KeypointsDataset(Dataset):
         """
         json_data = open(json_file)
         self.annotations = json.load(json_data)["annotations"]
+
         self.root_dir = root_dir
         self.transform = transform
         # filename => keypoints, bbox, is_visible, is_labeled
@@ -416,7 +430,8 @@ class KeypointsDataset(Dataset):
     def __getitem__(self, idx):
         fname = self.filename_list[idx]
         img_name = os.path.join(self.root_dir, fname)
-        image = gray2rgb(io.imread(img_name).astype(np.uint8))
+        #image = gray2rgb(io.imread(img_name).astype(np.uint8))
+        image = gray2rgb(io.imread(img_name))
         
         # center_x, center_y, visible_coco, width, height
         keypoints = np.array(self.data[fname][0], dtype='float32').reshape(-1,2)
@@ -424,22 +439,173 @@ class KeypointsDataset(Dataset):
         is_visible = self.data[fname][2]
         size = self.data[fname][3]
 
-        #print("keypoints:", keypoints)
-        #print("bbox:", bboxes)
-        #print("is_visible:", is_visible)
-        #print("size:", size)
         sample = {'image': image, 'keypoints': keypoints, 'bbox': bboxes, 'is_visible':is_visible, 'size': size}
 
+        #print("original_keypoints:", sample['keypoints'])
         if self.transform:
             sample = self.transform(sample)
-        print("test file name:", self.filename_list[idx])
-        print("image_shape", sample['image'].shape)
-        print("bbox:", len(sample['bbox']), sample['bbox'])
-        print("size:",len(size), "is_vis:", len(is_visible))
-        print("keypoints:", sample['keypoints'].shape)
-        print(sample['keypoints'])
+        #To Tensor
+        #print("test file name:", self.filename_list[idx])
+        #print("image_shape", sample['image'].shape)
+        #print("bbox:", sample['bbox'].shape)
+        #, len(bboxes), len(sample['bbox']), sample['bbox'])
+        #print("size:",len(size), "is_vis:", len(is_visible))
+        #print("old keypoints:", sample['keypoints'].shape)
+        sample['keypoints'] = sample['keypoints'].reshape(-1,21,2) 
+        #print("new keypoints:", sample['keypoints'].shape)
+        #print(sample['keypoints'])
 
+        #show_landmarks(sample['image'], sample['keypoints'], sample['bbox'], fname)
         return sample
+
+def collate_fn(datas,
+    insize=(384,384),
+    outsize=(32,32),
+    keypoint_names = KEYPOINT_NAMES , local_grid_size= (9,9), edges = EDGES):
+
+    inW, inH = insize
+    outW, outH = outsize
+    gridsize = (int(inW / outW), int(inH / outH))
+    gridW, gridH = gridsize
+
+    images = []
+    deltas = []
+    max_deltas_ij = []
+    txs = []
+    tys = []
+    tws = []
+    ths = []
+    tes = []
+    
+    for data in datas:
+        image = data['image']
+
+        keypoints = data['keypoints']
+        bbox = data['bbox']
+        is_visible = data['is_visible']
+        size = data['size']
+
+#        print("collate_image_shape", image.shape)
+#        print("collate_bbox:", bbox.shape)
+#        print("collate_keypoints:", keypoints.shape)
+#        #print("collate_isvisible:", is_visible[0].shape)
+#        sys.stdout.flush()
+
+        K = len(keypoint_names)
+
+        delta = np.zeros((K, outH, outW), dtype=np.float32)
+        tx = np.zeros((K, outH, outW), dtype=np.float32)
+        ty = np.zeros((K, outH, outW), dtype=np.float32)
+        tw = np.zeros((K, outH, outW), dtype=np.float32)
+        th = np.zeros((K, outH, outW), dtype=np.float32)
+        te = np.zeros((
+            len(edges),
+            local_grid_size[1], local_grid_size[0],
+            outH, outW), dtype=np.float32)
+
+        # Set delta^i_k
+        # points(x,y)
+
+        for (cx, cy, w, h), points, labeled, parts in zip(bbox, keypoints, is_visible, size):
+            partsW, partsH = parts, parts
+            instanceW, instanceH = w, h
+
+            points = [[cx, cy]] + list(points)
+
+            if w > 0 and h > 0:
+                labeled = [True] + list(labeled)
+            else:
+                labeled = [False] + list(labeled)
+
+            for k, (xy, l) in enumerate(zip(points, labeled)):
+                if not l:
+                    continue
+                cx = xy[0] / gridW
+                cy = xy[1] / gridH
+
+                ix, iy = int(cx), int(cy)
+                sizeW = instanceW if k == 0 else partsW
+                sizeH = instanceH if k == 0 else partsH
+                if 0 <= iy < outH and 0 <= ix < outW:
+                    delta[k, iy, ix] = 1 
+                    tx[k, iy, ix] = cx - ix
+                    ty[k, iy, ix] = cy - iy
+                    tw[k, iy, ix] = sizeW / inW 
+                    th[k, iy, ix] = sizeH / inH 
+
+            for ei, (s, t) in enumerate(edges):
+                if not labeled[s]:
+                    continue
+                if not labeled[t]:
+                    continue
+                src_xy = points[s]
+                tar_xy = points[t]
+                iyx = (int(src_xy[1] / gridH), int(src_xy[0] / gridW))
+                jyx = (int(tar_xy[1] / gridH) - iyx[0] + local_grid_size[1] // 2,
+                       int(tar_xy[0] / gridW) - iyx[1] + local_grid_size[0] // 2)
+
+                if iyx[0] < 0 or iyx[1] < 0 or iyx[0] >= outH or iyx[1] >= outW:
+                    continue
+                if jyx[0] < 0 or jyx[1] < 0 or jyx[0] >= local_grid_size[1] or jyx[1] >= local_grid_size[0]:
+                    continue
+
+                te[ei, jyx[0], jyx[1], iyx[0], iyx[1]] = 1
+
+        # define max(delta^i_k1, delta^j_k2) which is used for loss_limb
+        max_delta_ij = np.zeros((len(edges),
+                                outH, outW,
+                                local_grid_size[1], local_grid_size[0]), dtype=np.float32)
+        for ei,(s,t) in enumerate(edges):
+            max_delta_ij[ei][delta[s]!=0]=1
+            pad_delta_t=np.pad(delta[t],(local_grid_size[1]//2,local_grid_size[0]//2),'constant')
+            # Convolve filter
+            for r,c in zip(*np.where(delta[s]==0)):
+                rr=r+local_grid_size[1]//2
+                cc=c+local_grid_size[0]//2
+#                print("max:",max_delta_ij[ei][r,c].shape, r, rr, c, cc, rr-local_grid_size[1]//2, rr+local_grid_size[1]//2+1)
+#                print("pad_delta_t shape:", pad_delta_t.shape, pad_delta_t[
+#                    rr-local_grid_size[1]//2:rr+local_grid_size[1]//2+1,
+#                    cc-local_grid_size[0]//2:cc+local_grid_size[1]//2+1,
+#                ].shape)
+                max_delta_ij[ei][r,c]=pad_delta_t[
+                    rr-local_grid_size[1]//2:rr+local_grid_size[1]//2+1,
+                    cc-local_grid_size[0]//2:cc+local_grid_size[1]//2+1,
+                ]
+
+        max_delta_ij = max_delta_ij.transpose(0,3,4,1,2)
+
+        # Make Sequence of data 
+        images.append(image)
+        deltas.append(torch.from_numpy(delta))
+        max_deltas_ij.append(torch.from_numpy(max_delta_ij))
+        txs.append(torch.from_numpy(tx))
+        tys.append(torch.from_numpy(ty))
+        tws.append(torch.from_numpy(tw))
+        ths.append(torch.from_numpy(th))
+        tes.append(torch.from_numpy(te))
+
+    # Stack data 
+    image = torch.stack(images,0)
+    delta = torch.stack(deltas,0)
+    max_delta_ij = torch.stack(max_deltas_ij,0)
+    tx = torch.stack(txs,0)
+    ty = torch.stack(tys,0)
+    tw = torch.stack(tws,0)
+    th = torch.stack(ths,0)
+    te = torch.stack(tes,0)
+    
+#    print("collate_fn_shape: image", image.shape)
+#    print("delta", delta.shape)
+#    print("max_delta_ij", max_delta_ij.shape)
+#    print("tx", tx.shape)
+#    print("ty", ty.shape)
+#    print("tw", tw.shape)
+#    print("th", th.shape)
+#    print("te", te.shape)
+#    sys.stdout.flush()
+    return image, delta, max_delta_ij, tx, ty, tw, th, te
+
+
 
 #network
 class PoseProposalNet(nn.Module):
@@ -521,6 +687,7 @@ class PPNLoss(nn.Module):
 
         #TODO implement get_outsize
         #self.outsize = self.get_outsize()
+
         self.outsize = outsize
         inW, inH = self.insize
         outW, outH = self.outsize
@@ -540,19 +707,21 @@ class PPNLoss(nn.Module):
         outW, outH = self.outsize
         X, Y = torch.Tensor(np.meshgrid(np.arange(outW, dtype=np.float32), np.arange(outH, dtype=np.float32))).cuda()
         return (x + X) * gridW, (y + Y) * gridH
+
     def restore_size(self, w, h):
         inW, inH = self.insize
         return inW * w, inH * h
 
     # forward input
-    #loss = criterion(output, bboxes, labels, label_size, is_visible)
-    def forward(self, feature_map, bboxes, targets, size, is_visible):
+    #loss = criterion(output, delta, max_delta_ij, tx, ty, tw, th, te)
+    def forward(self, feature_map, delta, max_delta_ij, tx, ty, tw, th, te):
         #encoding target
-        delta, max_delta_ij, tx, ty, tw, th, te = self.encode(bboxes, targets, size, is_visible)
+        #delta, max_delta_ij, tx, ty, tw, th, te = self.encode(bboxes, targets, size, is_visible)
 
         ## TODO
         K = len(self.keypoint_names)
-        B = target.size()[0]
+        B = te.size()[0]
+        #print("b:", B)
         outW, outH = self.outsize
 
         #feature_map = self.forward(image)      
@@ -567,12 +736,16 @@ class PPNLoss(nn.Module):
 
         #print("e shape :", feature_map[:, 6 * K:, :, :].shape)
         #sys.stdout.flush()
-        e = feature_map[:, 6 * K:, :, :].reshape((
+        e = feature_map[:, 6 * K:, :, :].reshape(
             B,
             len(self.edges),
             self.local_grid_size[1], self.local_grid_size[0],
             outH, outW
-        ))
+        )
+        #print("reshaped e shape :", e.shape)
+        #print("te shape :", te.shape)
+        #sys.stdout.flush()
+
 #        print("resp", resp.dtype, resp.shape)
 #        print("conf", conf.dtype, conf.shape)
 #        print("sliced x", x.dtype, x.shape)
@@ -581,6 +754,7 @@ class PPNLoss(nn.Module):
 #        print("sliced h", h.dtype, h.shape)
 #        print("sliced e", e.dtype, e.shape)
 #        print("feature_map", feature_map.dtype)
+
         (rx, ry), (rw, rh) = self.restore_xy(x, y), self.restore_size(w, h)
         (rtx, rty), (rtw, rth) = self.restore_xy(tx, ty), self.restore_size(tw, th)
         #torch.set_printoptions(threshold=10000)
@@ -591,6 +765,7 @@ class PPNLoss(nn.Module):
         # add weight where can't find keypoint
         #xp = get_array_module(max_delta_ij)
         zero_place = torch.zeros(max_delta_ij.shape).cuda()
+
         zero_place[max_delta_ij < 0.5] = 0.0005
         weight_ij = torch.min(max_delta_ij + zero_place,
                                 torch.ones(zero_place.shape, dtype=torch.float32).cuda())
@@ -605,13 +780,11 @@ class PPNLoss(nn.Module):
 
         half = torch.zeros(delta.shape).cuda()
         half[delta < 0.5] = 0.5
-
-        loss_resp = torch.sum((resp - delta)**2, (2,3))
-        loss_iou = torch.sum(delta * (conf - ious)**2, (2,3))
-        loss_coor = torch.sum(weight * ((x - tx - half)**2 + (y - ty - half)**2), (2,3))
-        loss_size = torch.sum(weight * ((torch.sqrt(torch.abs(w + EPSILON)) - torch.sqrt(torch.abs(tw + EPSILON)))**2 +
-                                    (torch.sqrt(torch.abs(h + EPSILON)) - torch.sqrt(torch.abs(th + EPSILON)))**2 ), (2,3))
-        loss_limb = torch.sum(weight_ij * (e - te)**2, (2,3,4,5))
+        loss_resp = torch.sum((resp - delta)**2, tuple(range(1, resp.dim())) )
+        loss_iou = torch.sum(delta * (conf - ious)**2, tuple(range(1, conf.dim())))
+        loss_coor = torch.sum(weight * ((x - tx - half)**2 + (y - ty - half)**2), tuple(range(1, x.dim())))
+        loss_size = torch.sum(weight * ((torch.sqrt(torch.abs(w + EPSILON)) - torch.sqrt(torch.abs(tw + EPSILON)))**2 + (torch.sqrt(torch.abs(h + EPSILON)) - torch.sqrt(torch.abs(th + EPSILON)))**2 ), tuple(range(1, w.dim())))
+        loss_limb = torch.sum(weight_ij * (e - te)**2, tuple(range(1, e.dim())))
 
         loss_resp = torch.mean(loss_resp)
         loss_iou = torch.mean(loss_iou)
@@ -631,118 +804,6 @@ class PPNLoss(nn.Module):
         #print("loss_size:", loss_size)
         #print("loss_limb:", loss_limb)
         return loss
-
-
-    #delta, max_delta_ij, tx, ty, tw, th, te = self.encode(bboxes, targets, size, is_visible)
-    def encode(self, bboxes, keypoints, size, visible): 
-        #keypoints_xy = torch.narrow(keypoints, 2,0,2)
-        #print("keypoints xy size:", keypoints_xy.size())
-        #keypoints_wh = torch.narrow(keypoints, 2,3,2)
-        #print("keypoints wh size:", keypoints_wh.size())
-        #visible = torch.narrow(keypoints, 2,2,1)
-
-        B = keypoints.size()[0]
-
-        #bbox = in_data['bbox'] # [cx1, cy1, w, h]
-        #is_labeled = in_data['is_labeled']
-        #dataset_type = in_data['dataset_type']
-        #is_visible = in_data['is_visible']
-
-        inW, inH = self.insize
-        outW, outH = self.outsize
-        gridW, gridH = self.gridsize
-        K = len(self.keypoint_names)
-
-        delta = torch.zeros((B, K, outH, outW), dtype=torch.float32).cuda()
-        tx = torch.zeros((B, K, outH, outW), dtype=torch.float32).cuda()
-        ty = torch.zeros((B, K, outH, outW), dtype=torch.float32).cuda()
-        tw = torch.zeros((B, K, outH, outW), dtype=torch.float32).cuda()
-        th = torch.zeros((B, K, outH, outW), dtype=torch.float32).cuda()
-        te = torch.zeros((B,
-            len(self.edges),
-            self.local_grid_size[1], self.local_grid_size[0],
-            outH, outW),
-            dtype=torch.float32).cuda()
-
-        # Set delta^i_k
-        print("bboxes:", bboxes.size())
-        print("keypoints size:", keypoints.size())
-
-        for idx, ((box_x, box_y, box_w, box_h), points, pointswh, v) in enumerate(zip(bboxes, keypoints, size, visible)):
-            # mpi bbox instance converted to coco bbox instance format (total human)
-
-            # parts already defined by segmentation data and number of keypoints which encoded in keypoints objects
-            # process each idx-th batch
-            print("box_x:", box_x)
-            print("box_y:", box_y)
-
-            points =  list([torch.tensor([box_x, box_y], dtype=torch.float32).cuda()]) + list(points)
-            pointswh =  list([torch.tensor([box_w, box_h], dtype=torch.float32).cuda()]) + list(pointswh)
-            visibled = list(torch.tensor([[2.]]).cuda()) + list(v)
-
-            #print("visibled:", visibled) 
-            #print("points:", points)
-            #print("pointswh:", pointswh)
-
-            for k, (xy, pwh, v) in enumerate(zip(points, pointswh, visibled)):
-                #print(k, ", v:", v)
-                if v <= 0:  # filtered unlabeled 
-                    continue
-                cx = xy[0] / gridW
-                cy = xy[1] / gridH
-
-                #find appropriate grid which include center point
-                ix, iy = int(cx), int(cy)
-                sizeW, sizeH = pwh
-                #print("ix,iy:", ix, iy, outW, outH) 
-                if 0 <= iy < outH and 0 <= ix < outW:
-                    #print("k,iy,ix:", k, iy, ix)
-                    delta[idx, k, iy, ix] = 1
-                    tx[idx, k, iy, ix] = cx - ix
-                    ty[idx, k, iy, ix] = cy - iy
-                    tw[idx, k, iy, ix] = sizeW / inW
-                    th[idx, k, iy, ix] = sizeH / inH
-
-            #np.set_printoptions(threshold=np.nan)
-            for ei, (s, t) in enumerate(self.edges):
-                if visibled[s] <= 0:
-                    continue
-                if visibled[t] <= 0:
-                    continue
-
-                src_xy = points[s]
-                tar_xy = points[t]
-                ixy = (int(src_xy[0] / gridW), int(src_xy[1] / gridH))
-                jxy = (int(tar_xy[0] / gridW) - ixy[0] + self.local_grid_size[0] // 2,
-                       int(tar_xy[1] / gridH) - ixy[1] + self.local_grid_size[1] // 2)
-
-                if ixy[0] < 0 or ixy[1] < 0 or ixy[0] >= outW or ixy[1] >= outH:
-                    continue
-                if jxy[0] < 0 or jxy[1] < 0 or jxy[0] >= self.local_grid_size[0] or jxy[1] >= self.local_grid_size[1]:
-                    continue
-
-                # edge, tar_y, tar_x, start_y, start_x
-                te[idx, ei, jxy[1], jxy[0], ixy[1], ixy[0]] = 1
-
-        # define max(delta^i_k1, delta^j_k2) which is used for loss_limb
-        or_delta = torch.zeros((B, len(self.edges), outH, outW), dtype=torch.float32).cuda()
-        zeropad = nn.ZeroPad2d((self.local_grid_size[0]//2, self.local_grid_size[0]//2, self.local_grid_size[1]//2, self.local_grid_size[1]//2))
-        padded_delta = zeropad(delta)
-
-        for idx in range(B):
-            for ei, (s, t) in enumerate(self.edges):
-                or_delta[idx][ei] = torch.min(delta[idx][s] + delta[idx][t],
-                                torch.ones(delta[idx][s].shape, dtype=torch.float32).cuda())
-
-        mask = nn.MaxPool2d((self.local_grid_size[1], self.local_grid_size[0]), #kernel_size
-                                stride=1,
-                                padding=(self.local_grid_size[1] // 2, self.local_grid_size[0] // 2)).cuda()
-        m = mask(or_delta)
-        max_delta_ij = m.unsqueeze_(-1).expand(-1,-1,-1,-1,self.local_grid_size[0]).unsqueeze_(-1).expand(-1,-1,-1,-1,-1,self.local_grid_size[1])
-
-        max_delta_ij = max_delta_ij.permute(0,1,4,5,2,3)
-
-        return delta, max_delta_ij, tx, ty, tw, th, te
 
 
 best_loss = float("inf")
@@ -803,7 +864,7 @@ def main_worker(gpu, ngpus_per_node, args):
     train_dataset = KeypointsDataset(json_file = args.train_file, root_dir = args.root_dir+"/train2017/",
                     transform=transforms.Compose([
                         IAA((384,384),'train'),
-                        ToTensor(),
+                        ToTensor()
                     ]))
 
     
@@ -815,19 +876,19 @@ def main_worker(gpu, ngpus_per_node, args):
 
     train_loader = DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
-        num_workers=args.workers, pin_memory=True, sampler=train_sampler)
+        num_workers=args.workers, collate_fn = collate_fn, pin_memory=True, sampler=train_sampler)
 
     val_dataset = KeypointsDataset(json_file = args.val_file, root_dir = args.root_dir+"/val2017/",
                 transform=transforms.Compose([
                     IAA((384,384),'val'),
-                    ToTensor(),
+                    ToTensor()
                 ]))
 
 
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=args.batch_size, shuffle=False,
-        num_workers=args.workers, pin_memory=True)
+        num_workers=args.workers, collate_fn = collate_fn, pin_memory=True)
 
 
     # create model
@@ -911,26 +972,24 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     model.train()
 
     end = time.time()
-    for i, target in enumerate(train_loader):
+    for i, (target_img, delta, max_delta_ij, tx, ty, tw, th, te) in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
 
         adjust_learning_rate(optimizer, i, args)
 
-#        if args.gpu is not None:
-#            img = target['image'].cuda(args.gpu, non_blocking=True)
-#            bbox = target['bbox'].cuda(args.gpu, non_blocking=True)
-#            label = target['keypoints'].cuda(args.gpu, non_blocking=True)
-
-        img = target['image'].cuda()
-        bboxes = target['bbox'].cuda()
-        labels = target['keypoints'].cuda()
-        label_size = target['size'].cuda()
-        is_visible = targe['is_visible'].cuda()
+        img = target_img.cuda()
+        delta = delta.cuda()
+        max_delta_ij = max_delta_ij.cuda()
+        tx = tx.cuda()
+        ty = ty.cuda()
+        tw = tw.cuda()
+        th = th.cuda()
+        te = te.cuda()
 
         # compute output
         output = model(img)
-        loss = criterion(output, bboxes, labels, label_size, is_visible)
+        loss = criterion(output, delta, max_delta_ij, tx, ty, tw, th, te)
 
         # measure accuracy and record loss
         losses.update(loss.item(), img.size(0))
@@ -951,6 +1010,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                   'Loss {loss.val:.4f} ({loss.avg:.4f})'.format(
                    epoch, i, len(train_loader), batch_time=batch_time,
                    data_time=data_time, loss=losses))
+            sys.stdout.flush()
             plotter.plot('loss', 'train', 'PPN Loss', epoch*len(train_loader)+i, losses.avg) 
 
 #TODO function for evaluation like OKS
@@ -970,15 +1030,22 @@ def validate(val_loader, model, criterion, epoch, args):
     with torch.no_grad():
         end = time.time()
 
-        for i, target in enumerate(val_loader):
+        for i, (target_img, delta, max_delta_ij, tx, ty, tw, th, te) in enumerate(val_loader):
+            
             data_time.update(time.time() - end)
-            img = target['image'].cuda()
-            bbox = target['bbox'].cuda()
-            label = target['keypoints'].cuda()
+
+            img = target_img.cuda()
+            delta = delta.cuda()
+            max_delta_ij = max_delta_ij.cuda()
+            tx = tx.cuda()
+            ty = ty.cuda()
+            tw = tw.cuda()
+            th = th.cuda()
+            te = te.cuda()
 
             # compute output
             output = model(img)
-            loss = criterion(output, bbox, label)
+            loss = criterion(output, delta, max_delta_ij, tx, ty, tw, th, te)
 
             # measure and record loss
             losses.update(loss.item(), img.size(0))
@@ -995,6 +1062,7 @@ def validate(val_loader, model, criterion, epoch, args):
                       'Loss {loss.val:.4f} ({loss.avg:.4f})'.format(
                        epoch, i, len(val_loader), batch_time=batch_time,
                        data_time=data_time, loss=losses))
+                sys.stdout.flush()
     return losses.avg
 
 
@@ -1051,8 +1119,7 @@ if __name__ == '__main__':
     global plotter
     logger.addHandler(logging.StreamHandler())
     logger.setLevel(logging.INFO)
-    #TODO recover it for training log
-    #plotter = VisdomLinePlotter(env_name="PoseProposalNet")
+    plotter = VisdomLinePlotter(env_name="PoseProposalNet")
     main()
 
 #b^i_k 
