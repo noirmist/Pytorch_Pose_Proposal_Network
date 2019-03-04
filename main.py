@@ -797,12 +797,13 @@ class PPNLoss(nn.Module):
             self.lambda_coor * loss_coor + \
             self.lambda_size * loss_size + \
             self.lambda_limb * loss_limb
-        #print("loss:", loss)
-        #print("loss_resp:", loss_resp)
-        #print("loss_iou:", loss_iou)
-        #print("loss_coor:", loss_coor)
-        #print("loss_size:", loss_size)
-        #print("loss_limb:", loss_limb)
+
+        print("loss:", loss)
+        print("loss_resp:", loss_resp)
+        print("loss_iou:", loss_iou)
+        print("loss_coor:", loss_coor)
+        print("loss_size:", loss_size)
+        print("loss_limb:", loss_limb)
         return loss
 
 
