@@ -1,117 +1,216 @@
-import os
-# for using pytorch it changed to Dataset
-#from chainer.dataset import DatasetMixin
-from torch.utils.data import Dataset
+import json, os
 
-#import chainercv.transforms as transforms
-from utils import read_image
+from skimage import io, transform
+from skimage.color import gray2rgb
 import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import torch.utils.data
+from torch.utils.data import Dataset, DataLoader
+from config import *
 
-# stand alone mode done
-from augment import random_rotate, random_flip, random_crop
-from augment import scale_fit_short, resize
-from augment import augment_image
+class KeypointsDataset(Dataset):
+    def __init__(self, json_file, root_dir, transform=None):
+        """
+        Args:
+            json_file (string): path to the json file with annotations
+            root_dir(string): path to Directory for images
+            transform (optional):  transform to be applied on a sample.
+        """
+        json_data = open(json_file)
+        self.annotations = json.load(json_data)["annotations"]
 
+        self.root_dir = root_dir
+        self.transform = transform
+        # filename => keypoints, bbox, is_visible, is_labeled
+        self.data = {}
 
-class KeypointDataset2D(Dataset):
+        self.filename_list = np.unique([anno['file_name'] for anno in self.annotations]).tolist()
 
-    def __init__(self,
-                 dataset_type,
-                 insize,
-                 keypoint_names,
-                 edges,
-                 flip_indices,
-                 keypoints,
-                 bbox,
-                 is_visible,
-                 is_labeled,
-                 image_paths,
-                 image_root='.',
-                 use_cache=False,
-                 do_augmentation=False
-                 ):
-        self.dataset_type = dataset_type
-        self.insize = insize
-        self.keypoint_names = keypoint_names
-        self.edges = edges
-        self.flip_indices = flip_indices
-        self.keypoints = keypoints  # [array of y,x]
-        self.bbox = bbox  # [x,y,w,h]
-        self.is_visible = is_visible
-        self.is_labeled = is_labeled
-        self.image_paths = image_paths
-        self.image_root = image_root
-        self.do_augmentation = do_augmentation
-        self.use_cache = use_cache
-        self.cached_samples = [None] * len(image_paths)
+        for filename in np.unique([anno['file_name'] for anno in self.annotations]):
+            self.data[filename] = [], [], [], []
+
+        min_num_keypoints = 1
+        for anno in self.annotations:
+            is_visible = anno['is_visible']
+            if sum(is_visible) < min_num_keypoints:
+                continue
+            #keypoints = [anno['joint_pos'][k][::-1] for k in KEYPOINT_NAMES[1:]]
+            #keypoints = [anno['keypoints']]
+
+            entry = self.data[anno['file_name']]
+            entry[0].append(np.array(anno['keypoints']))  # array of x,y
+            entry[1].append(np.array(anno['bbox']))  # cx, cy, w, h
+            entry[2].append(np.array(is_visible, dtype=np.bool))
+            entry[3].append(anno['size'])
+            #is_labeled = np.ones(len(is_visible), dtype=np.bool)
+            #entry[3].append(is_labeled)
 
     def __len__(self):
-        return len(self.image_paths)
+        return len(self.data)
 
-    def transform(self, image, keypoints, bbox, is_labeled, is_visible, dataset_type):
-        transform_param = {}
+    def __getitem__(self, idx):
+        fname = self.filename_list[idx]
+        img_name = os.path.join(self.root_dir, fname)
+        #image = gray2rgb(io.imread(img_name).astype(np.uint8))
+        image = gray2rgb(io.imread(img_name))
+        
+        # center_x, center_y, visible_coco, width, height
+        keypoints = np.array(self.data[fname][0], dtype='float32').reshape(-1,2)
+        bboxes = self.data[fname][1]    # [center_x, center_y , width, height]
+        is_visible = self.data[fname][2]
+        size = self.data[fname][3]
 
-        # Color augmentation
-        image, param = augment_image(image, dataset_type)
-        transform_param['augment_image'] = param
+        sample = {'image': image, 'keypoints': keypoints, 'bbox': bboxes, 'is_visible':is_visible, 'size': size}
 
-        # Random rotate
-        image, keypoints, bbox, param = random_rotate(image, keypoints, bbox)
-        transform_param['random_rotate'] = param
+        #print("original_keypoints:", sample['keypoints'])
+        if self.transform:
+            sample = self.transform(sample)
+        #To Tensor
+        #print("test file name:", self.filename_list[idx])
+        #print("image_shape", sample['image'].shape)
+        #print("bbox:", sample['bbox'].shape)
+        #, len(bboxes), len(sample['bbox']), sample['bbox'])
+        #print("size:",len(size), "is_vis:", len(is_visible))
+        #print("old keypoints:", sample['keypoints'].shape)
+        sample['keypoints'] = sample['keypoints'].reshape(-1,21,2) 
+        #print("new keypoints:", sample['keypoints'].shape)
+        #print(sample['keypoints'])
 
-        # Random flip
-        image, keypoints, bbox, is_labeled, is_visible, param = random_flip(image, keypoints, bbox, is_labeled, is_visible, self.flip_indices)
-        transform_param['random_flip'] = param
+        #show_landmarks(sample['image'], sample['keypoints'], sample['bbox'], fname)
+        return sample
 
-        # Random crop
-        image, keypoints, bbox, param = random_crop(image, keypoints, bbox, is_labeled, dataset_type)
-        transform_param['random_crop'] = param
 
-        return image, keypoints, bbox, is_labeled, is_visible, transform_param
+def custom_collate_fn(datas,
+                    insize=(384,384),
+                    outsize=(12,12),
+                    keypoint_names = KEYPOINT_NAMES ,
+                    local_grid_size= (9,9),
+                    edges = EDGES
+                    ):
 
-    def get_example(self, i):
-        w, h = self.insize
+    inW, inH = insize
+    outW, outH = outsize
+    gridsize = (int(inW / outW), int(inH / outH))
+    gridW, gridH = gridsize
 
-        if self.use_cache and self.cached_samples[i] is not None:
-            image, keypoints, bbox, is_labeled, is_visible = self.cached_samples[i]
-        else:
-            path = os.path.join(self.image_root, self.image_paths[i])
-            image = read_image(path, dtype=np.float32, color=True)
-            keypoints = self.keypoints[i]
-            bbox = self.bbox[i]
-            is_labeled = self.is_labeled[i]
-            is_visible = self.is_visible[i]
+    images = []
+    deltas = []
+    max_deltas_ij = []
+    txs = []
+    tys = []
+    tws = []
+    ths = []
+    tes = []
+    
+    for data in datas:
+        image = data['image']
 
-            if self.use_cache:
-                image, keypoints, bbox = resize(image, keypoints, bbox, (h, w))
-                self.cached_samples[i] = image, keypoints, bbox, is_labeled, is_visible
+        keypoints = data['keypoints']
+        bbox = data['bbox']
+        is_visible = data['is_visible']
+        size = data['size']
 
-        image = image.copy()
-        keypoints = keypoints.copy()
-        bbox = bbox.copy()
-        is_labeled = is_labeled.copy()
-        is_visible = is_visible.copy()
+        K = len(keypoint_names)
 
-        transform_param = {}
-        try:
-            if self.do_augmentation:
-                image, keypoints, bbox = scale_fit_short(image, keypoints, bbox, length=int(min(h, w) * 1.25))
-                image, keypoints, bbox, is_labeled, is_visible, transform_param = self.transform(
-                    image, keypoints, bbox, is_labeled, is_visible, self.dataset_type)
-            transform_param['do_augmentation'] = self.do_augmentation
-            image, keypoints, bbox = resize(image, keypoints, bbox, (h, w))
-        except Exception as e:
-            raise Exception("something wrong...transform_param = {}".format(transform_param))
+        delta = np.zeros((K, outH, outW), dtype=np.float32)
+        tx = np.zeros((K, outH, outW), dtype=np.float32)
+        ty = np.zeros((K, outH, outW), dtype=np.float32)
+        tw = np.zeros((K, outH, outW), dtype=np.float32)
+        th = np.zeros((K, outH, outW), dtype=np.float32)
+        te = np.zeros((
+            len(edges),
+            local_grid_size[1], local_grid_size[0],
+            outH, outW), dtype=np.float32)
 
-        return {
-            'path': self.image_paths[i],
-            'keypoint_names': self.keypoint_names,
-            'edges': self.edges,
-            'image': image,
-            'keypoints': keypoints,
-            'bbox': bbox,
-            'is_labeled': is_labeled,
-            'is_visible': is_visible,
-            'dataset_type': self.dataset_type,
-            'transform_param': transform_param
-        }
+        # Set delta^i_k
+        # points(x,y)
+
+        for (cx, cy, w, h), points, labeled, parts in zip(bbox, keypoints, is_visible, size):
+            partsW, partsH = parts, parts
+            instanceW, instanceH = w, h
+
+            points = [[cx, cy]] + list(points)
+
+            if w > 0 and h > 0:
+                labeled = [True] + list(labeled)
+            else:
+                labeled = [False] + list(labeled)
+
+            for k, (xy, l) in enumerate(zip(points, labeled)):
+                if not l:
+                    continue
+                cx = xy[0] / gridW
+                cy = xy[1] / gridH
+
+                ix, iy = int(cx), int(cy)
+                sizeW = instanceW if k == 0 else partsW
+                sizeH = instanceH if k == 0 else partsH
+                if 0 <= iy < outH and 0 <= ix < outW:
+                    delta[k, iy, ix] = 1 
+                    tx[k, iy, ix] = cx - ix
+                    ty[k, iy, ix] = cy - iy
+                    tw[k, iy, ix] = sizeW / inW 
+                    th[k, iy, ix] = sizeH / inH 
+
+            for ei, (s, t) in enumerate(edges):
+                if not labeled[s]:
+                    continue
+                if not labeled[t]:
+                    continue
+                src_xy = points[s]
+                tar_xy = points[t]
+                iyx = (int(src_xy[1] / gridH), int(src_xy[0] / gridW))
+                jyx = (int(tar_xy[1] / gridH) - iyx[0] + local_grid_size[1] // 2,
+                       int(tar_xy[0] / gridW) - iyx[1] + local_grid_size[0] // 2)
+
+                if iyx[0] < 0 or iyx[1] < 0 or iyx[0] >= outH or iyx[1] >= outW:
+                    continue
+                if jyx[0] < 0 or jyx[1] < 0 or jyx[0] >= local_grid_size[1] or jyx[1] >= local_grid_size[0]:
+                    continue
+
+                te[ei, jyx[0], jyx[1], iyx[0], iyx[1]] = 1
+
+        # define max(delta^i_k1, delta^j_k2) which is used for loss_limb
+        max_delta_ij = np.zeros((len(edges),
+                                outH, outW,
+                                local_grid_size[1], local_grid_size[0]), dtype=np.float32)
+        for ei,(s,t) in enumerate(edges):
+            max_delta_ij[ei][delta[s]!=0]=1
+            pad_delta_t=np.pad(delta[t],(local_grid_size[1]//2,local_grid_size[0]//2),'constant')
+            # Convolve filter
+            for r,c in zip(*np.where(delta[s]==0)):
+                rr=r+local_grid_size[1]//2
+                cc=c+local_grid_size[0]//2
+                max_delta_ij[ei][r,c]=pad_delta_t[
+                    rr-local_grid_size[1]//2:rr+local_grid_size[1]//2+1,
+                    cc-local_grid_size[0]//2:cc+local_grid_size[1]//2+1,
+                ]
+
+        max_delta_ij = max_delta_ij.transpose(0,3,4,1,2)
+
+        # Make Sequence of data 
+        images.append(image)
+        deltas.append(torch.from_numpy(delta))
+        max_deltas_ij.append(torch.from_numpy(max_delta_ij))
+        txs.append(torch.from_numpy(tx))
+        tys.append(torch.from_numpy(ty))
+        tws.append(torch.from_numpy(tw))
+        ths.append(torch.from_numpy(th))
+        tes.append(torch.from_numpy(te))
+
+    # Stack data 
+    image = torch.stack(images,0)
+    delta = torch.stack(deltas,0)
+    max_delta_ij = torch.stack(max_deltas_ij,0)
+    tx = torch.stack(txs,0)
+    ty = torch.stack(tys,0)
+    tw = torch.stack(tws,0)
+    th = torch.stack(ths,0)
+    te = torch.stack(tes,0)
+
+    return image, delta, max_delta_ij, tx, ty, tw, th, te
+
+
+

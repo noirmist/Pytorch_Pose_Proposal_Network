@@ -8,6 +8,7 @@ import sys
 import json
 import math
 import cv2
+import functools
 
 import logging
 logger = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
-from utils import pairwise
+#from utils import pairwise
 from PIL import Image
 
 import imgaug as ia
@@ -47,100 +48,10 @@ from imgaug import augmenters as iaa
 from torchsummary import summary
 from visdom import Visdom
 
-name_list = [ 
-        "nose",
-        "left_eye",
-        "right_eye",
-        "left_ear",
-        "right_ear",
-        "left_shoulder",
-        "right_shoulder",
-        "left_elbow",
-        "right_elbow",
-        "left_wrist",
-        "right_wrist",
-        "left_hip",
-        "right_hip",
-        "left_knee",
-        "right_knee",
-        "left_ankle",
-        "right_ankle",
-        "thorax",
-        "pelvis",
-        "neck",
-        "top"
-]
-
-COLOR_MAP = {
-    'instance': (225, 225, 225),
-    'nose': (255, 0, 0),
-    'right_shoulder': (255, 170, 0),
-    'right_elbow': (255, 255, 0),
-    'right_wrist': (170, 255, 0),
-    'left_shoulder': (85, 255, 0),
-    'left_elbow': (0, 127, 0),
-    'left_wrist': (0, 255, 85),
-    'right_hip': (0, 170, 170),
-    'right_knee': (0, 255, 255),
-    'right_ankle': (0, 170, 255),
-    'left_hip': (0, 85, 255),
-    'left_knee': (0, 0, 255),
-    'left_ankle': (85, 0, 255),
-    'right_eye': (170, 0, 255),
-    'left_eye': (255, 0, 255),
-    'right_ear': (255, 0, 170),
-    'left_ear': (255, 0, 85),
-    'thorax': (128, 0, 80),
-    'pelvis': (128, 80, 170),
-    'neck': (255, 85, 0),
-    'top': (200, 80, 0)
-}
-
-EDGES_BY_NAME = [
-    ['instance', 'thorax'],
-    ['thorax','neck'],
-    ['neck', 'nose'],
-    ['nose', 'top'],
-    ['nose', 'left_eye'],
-    ['left_eye', 'left_ear'],
-    ['nose', 'right_eye'],
-    ['right_eye', 'right_ear'],
-    ['instance', 'left_shoulder'],
-    ['left_shoulder', 'left_elbow'],
-    ['left_elbow', 'left_wrist'],
-    ['instance', 'right_shoulder'],
-    ['right_shoulder', 'right_elbow'],
-    ['right_elbow', 'right_wrist'],
-    ['instance', 'pelvis'],
-    ['pelvis', 'left_hip'],
-    ['left_hip', 'left_knee'],
-    ['left_knee', 'left_ankle'],
-    ['pelvis', 'right_hip'],
-    ['right_hip', 'right_knee'],
-    ['right_knee', 'right_ankle'],
-]
-
-KEYPOINT_NAMES = ['instance'] + name_list
-EDGES = [[KEYPOINT_NAMES.index(s), KEYPOINT_NAMES.index(d)] for s, d in EDGES_BY_NAME]
-
-TRACK_ORDER_0 = ['instance', 'thorax', 'neck', 'nose', 'left_eye', 'left_ear']
-TRACK_ORDER_1 = ['instance', 'thorax', 'neck', 'nose', 'right_eye', 'right_ear']
-TRACK_ORDER_2 = ['instance', 'thorax', 'neck', 'nose', 'top']
-TRACK_ORDER_3 = ['instance', 'left_shoulder', 'left_elbow', 'left_wrist']
-TRACK_ORDER_4 = ['instance', 'right_shoulder', 'right_elbow', 'right_wrist']
-TRACK_ORDER_5 = ['instance', 'pelvis', 'left_hip', 'left_knee', 'left_ankle']
-TRACK_ORDER_6 = ['instance', 'pelvis', 'right_hip', 'right_knee', 'right_ankle']
-
-TRACK_ORDERS = [TRACK_ORDER_0, TRACK_ORDER_1, TRACK_ORDER_2, TRACK_ORDER_3, TRACK_ORDER_4, TRACK_ORDER_5, TRACK_ORDER_6]
-
-DIRECTED_GRAPHS = []
-
-for keypoints in TRACK_ORDERS:
-    es = [EDGES_BY_NAME.index([a, b]) for a, b in pairwise(keypoints)]
-    ts = [KEYPOINT_NAMES.index(b) for a, b in pairwise(keypoints)]
-    DIRECTED_GRAPHS.append([es, ts])
-
-EPSILON = 1e-6
+#Custom models
+from model import *
+from config import *
+from dataset import *
 
 
 model_names = sorted(name for name in models.__dict__
@@ -151,6 +62,7 @@ parser = argparse.ArgumentParser(description='PyTorch PoseProposalNet Training')
 parser.add_argument("-train", "--train_file", help="json file path")
 parser.add_argument("-val", "--val_file", help="json file path")
 parser.add_argument("-img", "--root_dir", help="path to train2017 or val2018")
+parser.add_argument("-imsize", "--image_size", default=384, help="set input image size")
 
 parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet18',
                     choices=model_names,
@@ -179,6 +91,8 @@ parser.add_argument('-p', '--print-freq', default=10, type=int,
                     metavar='N', help='print frequency (default: 10)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
+parser.add_argument('--save', default='', type=str, metavar='PATH',
+                    help='path to save checkpoint (default: none)')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
 parser.add_argument('--pretrained', dest='pretrained', action='store_true',
@@ -198,7 +112,7 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
                          'multi node data parallel training')
 
 
-# Network implementation
+# Aument implementation
 def parse_size(text):
     w, h = text.split('x')
     w = float(w)
@@ -386,288 +300,12 @@ class ToTensor(object):
                 'size': sample['size'],
                 'is_visible': sample['is_visible']}
 
- 
-class KeypointsDataset(Dataset):
-    def __init__(self, json_file, root_dir, transform=None):
-        """
-        Args:
-            json_file (string): path to the json file with annotations
-            root_dir(string): path to Directory for images
-            transform (optional):  transform to be applied on a sample.
-        """
-        json_data = open(json_file)
-        self.annotations = json.load(json_data)["annotations"]
-
-        self.root_dir = root_dir
-        self.transform = transform
-        # filename => keypoints, bbox, is_visible, is_labeled
-        self.data = {}
-
-        self.filename_list = np.unique([anno['file_name'] for anno in self.annotations]).tolist()
-
-        for filename in np.unique([anno['file_name'] for anno in self.annotations]):
-            self.data[filename] = [], [], [], []
-
-        min_num_keypoints = 1
-        for anno in self.annotations:
-            is_visible = anno['is_visible']
-            if sum(is_visible) < min_num_keypoints:
-                continue
-            #keypoints = [anno['joint_pos'][k][::-1] for k in KEYPOINT_NAMES[1:]]
-            #keypoints = [anno['keypoints']]
-
-            entry = self.data[anno['file_name']]
-            entry[0].append(np.array(anno['keypoints']))  # array of x,y
-            entry[1].append(np.array(anno['bbox']))  # cx, cy, w, h
-            entry[2].append(np.array(is_visible, dtype=np.bool))
-            entry[3].append(anno['size'])
-            #is_labeled = np.ones(len(is_visible), dtype=np.bool)
-            #entry[3].append(is_labeled)
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        fname = self.filename_list[idx]
-        img_name = os.path.join(self.root_dir, fname)
-        #image = gray2rgb(io.imread(img_name).astype(np.uint8))
-        image = gray2rgb(io.imread(img_name))
-        
-        # center_x, center_y, visible_coco, width, height
-        keypoints = np.array(self.data[fname][0], dtype='float32').reshape(-1,2)
-        bboxes = self.data[fname][1]    # [center_x, center_y , width, height]
-        is_visible = self.data[fname][2]
-        size = self.data[fname][3]
-
-        sample = {'image': image, 'keypoints': keypoints, 'bbox': bboxes, 'is_visible':is_visible, 'size': size}
-
-        #print("original_keypoints:", sample['keypoints'])
-        if self.transform:
-            sample = self.transform(sample)
-        #To Tensor
-        #print("test file name:", self.filename_list[idx])
-        #print("image_shape", sample['image'].shape)
-        #print("bbox:", sample['bbox'].shape)
-        #, len(bboxes), len(sample['bbox']), sample['bbox'])
-        #print("size:",len(size), "is_vis:", len(is_visible))
-        #print("old keypoints:", sample['keypoints'].shape)
-        sample['keypoints'] = sample['keypoints'].reshape(-1,21,2) 
-        #print("new keypoints:", sample['keypoints'].shape)
-        #print(sample['keypoints'])
-
-        #show_landmarks(sample['image'], sample['keypoints'], sample['bbox'], fname)
-        return sample
-
-def collate_fn(datas,
-    insize=(384,384),
-    outsize=(32,32),
-    keypoint_names = KEYPOINT_NAMES , local_grid_size= (9,9), edges = EDGES):
-
-    inW, inH = insize
-    outW, outH = outsize
-    gridsize = (int(inW / outW), int(inH / outH))
-    gridW, gridH = gridsize
-
-    images = []
-    deltas = []
-    max_deltas_ij = []
-    txs = []
-    tys = []
-    tws = []
-    ths = []
-    tes = []
-    
-    for data in datas:
-        image = data['image']
-
-        keypoints = data['keypoints']
-        bbox = data['bbox']
-        is_visible = data['is_visible']
-        size = data['size']
-
-#        print("collate_image_shape", image.shape)
-#        print("collate_bbox:", bbox.shape)
-#        print("collate_keypoints:", keypoints.shape)
-#        #print("collate_isvisible:", is_visible[0].shape)
-#        sys.stdout.flush()
-
-        K = len(keypoint_names)
-
-        delta = np.zeros((K, outH, outW), dtype=np.float32)
-        tx = np.zeros((K, outH, outW), dtype=np.float32)
-        ty = np.zeros((K, outH, outW), dtype=np.float32)
-        tw = np.zeros((K, outH, outW), dtype=np.float32)
-        th = np.zeros((K, outH, outW), dtype=np.float32)
-        te = np.zeros((
-            len(edges),
-            local_grid_size[1], local_grid_size[0],
-            outH, outW), dtype=np.float32)
-
-        # Set delta^i_k
-        # points(x,y)
-
-        for (cx, cy, w, h), points, labeled, parts in zip(bbox, keypoints, is_visible, size):
-            partsW, partsH = parts, parts
-            instanceW, instanceH = w, h
-
-            points = [[cx, cy]] + list(points)
-
-            if w > 0 and h > 0:
-                labeled = [True] + list(labeled)
-            else:
-                labeled = [False] + list(labeled)
-
-            for k, (xy, l) in enumerate(zip(points, labeled)):
-                if not l:
-                    continue
-                cx = xy[0] / gridW
-                cy = xy[1] / gridH
-
-                ix, iy = int(cx), int(cy)
-                sizeW = instanceW if k == 0 else partsW
-                sizeH = instanceH if k == 0 else partsH
-                if 0 <= iy < outH and 0 <= ix < outW:
-                    delta[k, iy, ix] = 1 
-                    tx[k, iy, ix] = cx - ix
-                    ty[k, iy, ix] = cy - iy
-                    tw[k, iy, ix] = sizeW / inW 
-                    th[k, iy, ix] = sizeH / inH 
-
-            for ei, (s, t) in enumerate(edges):
-                if not labeled[s]:
-                    continue
-                if not labeled[t]:
-                    continue
-                src_xy = points[s]
-                tar_xy = points[t]
-                iyx = (int(src_xy[1] / gridH), int(src_xy[0] / gridW))
-                jyx = (int(tar_xy[1] / gridH) - iyx[0] + local_grid_size[1] // 2,
-                       int(tar_xy[0] / gridW) - iyx[1] + local_grid_size[0] // 2)
-
-                if iyx[0] < 0 or iyx[1] < 0 or iyx[0] >= outH or iyx[1] >= outW:
-                    continue
-                if jyx[0] < 0 or jyx[1] < 0 or jyx[0] >= local_grid_size[1] or jyx[1] >= local_grid_size[0]:
-                    continue
-
-                te[ei, jyx[0], jyx[1], iyx[0], iyx[1]] = 1
-
-        # define max(delta^i_k1, delta^j_k2) which is used for loss_limb
-        max_delta_ij = np.zeros((len(edges),
-                                outH, outW,
-                                local_grid_size[1], local_grid_size[0]), dtype=np.float32)
-        for ei,(s,t) in enumerate(edges):
-            max_delta_ij[ei][delta[s]!=0]=1
-            pad_delta_t=np.pad(delta[t],(local_grid_size[1]//2,local_grid_size[0]//2),'constant')
-            # Convolve filter
-            for r,c in zip(*np.where(delta[s]==0)):
-                rr=r+local_grid_size[1]//2
-                cc=c+local_grid_size[0]//2
-#                print("max:",max_delta_ij[ei][r,c].shape, r, rr, c, cc, rr-local_grid_size[1]//2, rr+local_grid_size[1]//2+1)
-#                print("pad_delta_t shape:", pad_delta_t.shape, pad_delta_t[
-#                    rr-local_grid_size[1]//2:rr+local_grid_size[1]//2+1,
-#                    cc-local_grid_size[0]//2:cc+local_grid_size[1]//2+1,
-#                ].shape)
-                max_delta_ij[ei][r,c]=pad_delta_t[
-                    rr-local_grid_size[1]//2:rr+local_grid_size[1]//2+1,
-                    cc-local_grid_size[0]//2:cc+local_grid_size[1]//2+1,
-                ]
-
-        max_delta_ij = max_delta_ij.transpose(0,3,4,1,2)
-
-        # Make Sequence of data 
-        images.append(image)
-        deltas.append(torch.from_numpy(delta))
-        max_deltas_ij.append(torch.from_numpy(max_delta_ij))
-        txs.append(torch.from_numpy(tx))
-        tys.append(torch.from_numpy(ty))
-        tws.append(torch.from_numpy(tw))
-        ths.append(torch.from_numpy(th))
-        tes.append(torch.from_numpy(te))
-
-    # Stack data 
-    image = torch.stack(images,0)
-    delta = torch.stack(deltas,0)
-    max_delta_ij = torch.stack(max_deltas_ij,0)
-    tx = torch.stack(txs,0)
-    ty = torch.stack(tys,0)
-    tw = torch.stack(tws,0)
-    th = torch.stack(ths,0)
-    te = torch.stack(tes,0)
-    
-#    print("collate_fn_shape: image", image.shape)
-#    print("delta", delta.shape)
-#    print("max_delta_ij", max_delta_ij.shape)
-#    print("tx", tx.shape)
-#    print("ty", ty.shape)
-#    print("tw", tw.shape)
-#    print("th", th.shape)
-#    print("te", te.shape)
-#    sys.stdout.flush()
-    return image, delta, max_delta_ij, tx, ty, tw, th, te
-
-
-
-#network
-class PoseProposalNet(nn.Module):
-    def __init__(self, backbone, insize=(384,384), outsize=(32,32), keypoint_names = KEYPOINT_NAMES , local_grid_size= (9,9), edges = EDGES ):
-        super(PoseProposalNet, self).__init__()
-        self.insize = insize
-        self.keypoint_names = keypoint_names
-        self.edges = edges
-        self.local_grid_size = local_grid_size
-        #self.dtype = dtype
-
-        #self.instance_scale = np.array(instance_scale)
-
-        #self.outsize = self.get_outsize()
-        self.outsize = outsize
-        inW, inH = self.insize
-        outW, outH = self.outsize
-        sW, sH = self.local_grid_size
-        self.gridsize = (int(inW / outW), int(inH / outH))
-        self.lastsize = 6*(len(self.keypoint_names))+(sW)*(sH)*len(self.edges)
-
-        #ResNet w/o avgpool&fc
-        self.backbone = backbone
-
-        # modified cnn layer
-        self.conv1 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=3//2, bias=False)
-        self.conv2 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=3//2, bias=False)
-        self.conv3 = nn.Conv2d(512, self.lastsize, kernel_size=1, stride=1)
-        #self.conv3 = nn.Conv2d(512, 1311, kernel_size=1, stride=1)
-
-        self.linear = nn.Linear(144,1024)
-        self.lRelu = nn.LeakyReLU(0.1)
-        self.bn = nn.BatchNorm2d(512)
-
-
-    def forward(self, input):
-
-        #print("input type:", input.dtype)
-        # load resnet 
-        resnet_out = self.backbone(input)
-        conv1_out = self.conv1(resnet_out)
-        bn1 = self.bn(conv1_out)
-        lRelu1 = self.lRelu(bn1)
-
-        conv2_out = self.conv2(lRelu1)
-        lRelu2 = self.lRelu(conv2_out)
-
-        conv3_out = self.conv3(lRelu2)
-        #print("conv3_out:", conv3_out[0][0][0].shape)
-        #print("conv3_out:", conv3_out[0][0][0])
-
-        out = self.linear(conv3_out.reshape(-1,self.lastsize, 144)).reshape(-1,self.lastsize, 32,32)
-        #print("network out type:", out.dtype)
-
-        return out
-
 
 #loss function
 class PPNLoss(nn.Module):
     def __init__(self,
                 insize=(384,384),
-                outsize=(32,32),
+                outsize=(12,12),
                 keypoint_names = KEYPOINT_NAMES , local_grid_size= (9,9), edges = EDGES,
                 width_multiplier=1.0,
                 lambda_resp=0.25,
@@ -714,18 +352,15 @@ class PPNLoss(nn.Module):
 
     # forward input
     #loss = criterion(output, delta, max_delta_ij, tx, ty, tw, th, te)
-    def forward(self, feature_map, delta, max_delta_ij, tx, ty, tw, th, te):
+    def forward(self, image, feature_map, delta, max_delta_ij, tx, ty, tw, th, te):
         #encoding target
         #delta, max_delta_ij, tx, ty, tw, th, te = self.encode(bboxes, targets, size, is_visible)
 
         ## TODO
         K = len(self.keypoint_names)
-        B = te.size()[0]
-        #print("b:", B)
+        B, _, _, _ = image.shape
         outW, outH = self.outsize
 
-        #feature_map = self.forward(image)      
-        #print("feature_map shape:", feature_map.shape)
         #loss function with torch
         resp = feature_map[:, 0 * K:1 * K, :, :]
         conf = feature_map[:, 1 * K:2 * K, :, :]
@@ -733,19 +368,14 @@ class PPNLoss(nn.Module):
         y = feature_map[:, 3 * K:4 * K, :, :]
         w = feature_map[:, 4 * K:5 * K, :, :]
         h = feature_map[:, 5 * K:6 * K, :, :]
-
-        #print("e shape :", feature_map[:, 6 * K:, :, :].shape)
-        #sys.stdout.flush()
         e = feature_map[:, 6 * K:, :, :].reshape(
             B,
             len(self.edges),
             self.local_grid_size[1], self.local_grid_size[0],
             outH, outW
         )
-        #print("reshaped e shape :", e.shape)
-        #print("te shape :", te.shape)
-        #sys.stdout.flush()
 
+#        print("feature_map shape:", feature_map.shape)
 #        print("resp", resp.dtype, resp.shape)
 #        print("conf", conf.dtype, conf.shape)
 #        print("sliced x", x.dtype, x.shape)
@@ -753,7 +383,8 @@ class PPNLoss(nn.Module):
 #        print("sliced w", w.dtype, w.shape)
 #        print("sliced h", h.dtype, h.shape)
 #        print("sliced e", e.dtype, e.shape)
-#        print("feature_map", feature_map.dtype)
+#        print("te shape :", te.shape)
+#        sys.stdout.flush()
 
         (rx, ry), (rw, rh) = self.restore_xy(x, y), self.restore_size(w, h)
         (rtx, rty), (rtw, rth) = self.restore_xy(tx, ty), self.restore_size(tw, th)
@@ -798,13 +429,14 @@ class PPNLoss(nn.Module):
             self.lambda_size * loss_size + \
             self.lambda_limb * loss_limb
 
-        print("loss:", loss)
-        print("loss_resp:", loss_resp)
-        print("loss_iou:", loss_iou)
-        print("loss_coor:", loss_coor)
-        print("loss_size:", loss_size)
-        print("loss_limb:", loss_limb)
-        return loss
+#        print("loss:", loss.item())
+#        print("loss_resp:", loss_resp.item())
+#        print("loss_iou:", loss_iou.item())
+#        print("loss_coor:", loss_coor.item())
+#        print("loss_size:", loss_size.item())
+#        print("loss_limb:", loss_limb.item())
+    
+        return loss, loss_resp, loss_iou, loss_coor, loss_size, loss_limb
 
 
 best_loss = float("inf")
@@ -855,42 +487,9 @@ def main_worker(gpu, ngpus_per_node, args):
             # For multiprocessing distributed training, rank needs to be the
             # global rank among all the processes
             args.rank = args.rank * ngpus_per_node + gpu
+
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
                                 world_size=args.world_size, rank=args.rank)
-
-    # Data loading code
-    #normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-    #                                 std=[0.229, 0.224, 0.225])
-
-    train_dataset = KeypointsDataset(json_file = args.train_file, root_dir = args.root_dir+"/train2017/",
-                    transform=transforms.Compose([
-                        IAA((384,384),'train'),
-                        ToTensor()
-                    ]))
-
-    
-    if args.distributed:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-    else:
-        train_sampler = None
-
-
-    train_loader = DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
-        num_workers=args.workers, collate_fn = collate_fn, pin_memory=True, sampler=train_sampler)
-
-    val_dataset = KeypointsDataset(json_file = args.val_file, root_dir = args.root_dir+"/val2017/",
-                transform=transforms.Compose([
-                    IAA((384,384),'val'),
-                    ToTensor()
-                ]))
-
-
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset,
-        batch_size=args.batch_size, shuffle=False,
-        num_workers=args.workers, collate_fn = collate_fn, pin_memory=True)
-
 
     # create model
     if args.pretrained:
@@ -908,9 +507,67 @@ def main_worker(gpu, ngpus_per_node, args):
     if torch.cuda.device_count() > 1:
         model = torch.nn.DataParallel(model).cuda()
 
+    # Test model to get outsize
+    inputs = torch.randn(1,3, args.image_size, args.image_size)
+    y =  model(inputs)
+    _, _, outH, outW =y.shape
+    outsize = (outW, outH)
+    insize = (args.image_size, args.image_size)
+
+    # Data loading code
+    #normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+    #                                 std=[0.229, 0.224, 0.225])
+    train_dataset = KeypointsDataset(json_file = args.train_file, root_dir = args.root_dir+"/train2017/",
+                    transform=transforms.Compose([
+                        IAA(insize,'train'),
+                        ToTensor()
+                    ]))
+
+    if args.distributed:
+        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
+    else:
+        train_sampler = None
+
+    collate_fn = functools.partial(custom_collate_fn, 
+                                insize=insize,
+                                outsize = outsize, 
+                                keypoint_names = KEYPOINT_NAMES ,
+                                local_grid_size = (9,9),
+                                edges = EDGES)
+
+    train_loader = DataLoader(
+        train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
+        num_workers=args.workers, collate_fn = collate_fn, pin_memory=True, sampler=train_sampler)
+
+    val_dataset = KeypointsDataset(json_file = args.val_file, root_dir = args.root_dir+"/val2017/",
+                transform=transforms.Compose([
+                    IAA(insize,'val'),
+                    ToTensor()
+                ]))
+
+
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset,
+        batch_size=args.batch_size, shuffle=False,
+        num_workers=args.workers, collate_fn = collate_fn, pin_memory=True)
+
+
     # define loss function (criterion) and optimizer
     # define custom loss 
-    criterion = PPNLoss().cuda()
+    criterion = PPNLoss(
+                insize=insize,
+                outsize=outsize,
+                keypoint_names = KEYPOINT_NAMES,
+                local_grid_size= (9,9), 
+                edges = EDGES,
+                width_multiplier=1.0,
+                lambda_resp=0.25,
+                lambda_iou=1.0,
+                lambda_coor=5.0,
+                lambda_size=5.0,
+                lambda_limb=0.5
+            ).cuda()
+
     optimizer = torch.optim.SGD(model.parameters(), args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
@@ -954,20 +611,25 @@ def main_worker(gpu, ngpus_per_node, args):
 
         if not args.multiprocessing_distributed or (args.multiprocessing_distributed
                 and args.rank % ngpus_per_node == 0):
-            print("checkpoints is saved!!!")
+            print("checkpoints checking")
             save_checkpoint({
                 'epoch': epoch + 1,
                 'arch': args.arch,
                 'state_dict': model.state_dict(),
                 'best_loss': best_loss,
                 'optimizer' : optimizer.state_dict(),
-            }, is_best)
+            }, is_best, epoch+1, args.save)
 
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
+    losses_resp = AverageMeter()
+    losses_iou = AverageMeter()
+    losses_coor = AverageMeter()
+    losses_size = AverageMeter()
+    losses_limb = AverageMeter()
 
     # switch to train mode
     model.train()
@@ -990,10 +652,16 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
 
         # compute output
         output = model(img)
-        loss = criterion(output, delta, max_delta_ij, tx, ty, tw, th, te)
+        loss, loss_resp, loss_iou, loss_coor, loss_size, loss_limb = criterion(img, output, delta, max_delta_ij, tx, ty, tw, th, te)
 
         # measure accuracy and record loss
         losses.update(loss.item(), img.size(0))
+        losses_resp.update(loss_resp.item(), img.size(0))
+        losses_iou.update(loss_iou.item(), img.size(0))
+        losses_coor.update(loss_coor.item(), img.size(0))
+        losses_size.update(loss_size.item(), img.size(0))
+        losses_limb.update(loss_limb.item(), img.size(0))
+
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
@@ -1008,9 +676,11 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
             print('Epoch: [{0}][{1}/{2}]\t'
                   'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                   'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                  'Loss {loss.val:.4f} ({loss.avg:.4f})'.format(
+                  'Loss {loss.val:.4f} ({loss.avg:.4f}: {loss_resp.avg:.4f} + '
+                  '{loss_iou.avg:.4f} + {loss_coor.avg:.4f} + '
+                  '{loss_size.avg:.4f} + {loss_limb.avg:.4f})'.format(
                    epoch, i, len(train_loader), batch_time=batch_time,
-                   data_time=data_time, loss=losses))
+                   data_time=data_time, loss=losses, loss_resp=losses_resp, loss_iou=losses_iou, loss_coor=losses_coor, loss_size=losses_size, loss_limb=losses_limb))
             sys.stdout.flush()
             plotter.plot('loss', 'train', 'PPN Loss', epoch*len(train_loader)+i, losses.avg) 
 
@@ -1021,6 +691,11 @@ def validate(val_loader, model, criterion, epoch, args):
     losses = AverageMeter()
     data_time = AverageMeter()
 
+    losses_resp = AverageMeter()
+    losses_iou = AverageMeter()
+    losses_coor = AverageMeter()
+    losses_size = AverageMeter()
+    losses_limb = AverageMeter()
 
     end = time.time()
 
@@ -1046,10 +721,15 @@ def validate(val_loader, model, criterion, epoch, args):
 
             # compute output
             output = model(img)
-            loss = criterion(output, delta, max_delta_ij, tx, ty, tw, th, te)
+            loss, loss_resp, loss_iou, loss_coor, loss_size, loss_limb = criterion(img, output, delta, max_delta_ij, tx, ty, tw, th, te)
 
             # measure and record loss
             losses.update(loss.item(), img.size(0))
+            losses_resp.update(loss_resp.item(), img.size(0))
+            losses_iou.update(loss_iou.item(), img.size(0))
+            losses_coor.update(loss_coor.item(), img.size(0))
+            losses_size.update(loss_size.item(), img.size(0))
+            losses_limb.update(loss_limb.item(), img.size(0))
 
             # measure elapsed time
             batch_time.update(time.time() - end)
@@ -1060,17 +740,23 @@ def validate(val_loader, model, criterion, epoch, args):
                 print('Epoch: [{0}][{1}/{2}]\t'
                       'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                       'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                      'Loss {loss.val:.4f} ({loss.avg:.4f})'.format(
+                      'Loss {loss.val:.4f} ({loss.avg:.4f}: {loss_resp.avg:.4f} + '
+                      '{loss_iou.avg:.4f} + {loss_coor.avg:.4f} + '
+                      '{loss_size.avg:.4f} + {loss_limb.avg:.4f})'.format(
                        epoch, i, len(val_loader), batch_time=batch_time,
-                       data_time=data_time, loss=losses))
+                       data_time=data_time, loss=losses, loss_resp=losses_resp, loss_iou=losses_iou, loss_coor=losses_coor, loss_size=losses_size, loss_limb=losses_limb))
                 sys.stdout.flush()
     return losses.avg
 
 
-def save_checkpoint(state, is_best, filename='PPN_checkpoint.pth.tar'):
+def save_checkpoint(state, is_best, epochs, save_folder):
+    filename =  save_folder+'/PPN_model_'+str(epochs)+'.pth.tar'
     torch.save(state, filename)
+
     if is_best:
-        shutil.copyfile(filename, 'PPN_model_best.pth.tar')
+        print("best checkpoints is saved!!!")
+        shutil.copyfile(filename, save_folder+'/PPN_model_best.pth.tar')
+
 
 
 class AverageMeter(object):
