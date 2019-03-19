@@ -32,18 +32,17 @@ from torchvision import utils
 import torchvision.datasets as datasets
 import torchvision.models as models
 
-from skimage import io, transform
-from skimage.color import gray2rgb
+#from skimage import io, transform
+#from skimage.color import gray2rgb
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
-#from utils import pairwise
-from PIL import Image
+#from PIL import Image
 
-import imgaug as ia
-from imgaug import augmenters as iaa
+#import imgaug as ia
+#from imgaug import augmenters as iaa
 
 from torchsummary import summary
 from visdom import Visdom
@@ -52,7 +51,7 @@ from visdom import Visdom
 from model import *
 from config import *
 from dataset import *
-
+from aug import *
 
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
@@ -112,22 +111,10 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
                          'multi node data parallel training')
 
 
-# Aument implementation
-def parse_size(text):
-    w, h = text.split('x')
-    w = float(w)
-    h = float(h)
-    if w.is_integer():
-        w = int(w)
-    if h.is_integer():
-        h = int(h)
-    return w, h
-
-
+# Augment implementation
 def area(bbox):
     _, _, w, h = bbox
     return w * h 
-
 
 def intersection(bbox0, bbox1):
     x0, y0, w0, h0 = bbox0
@@ -143,38 +130,10 @@ def iou(bbox0, bbox1):
     area0 = area(bbox0)
     area1 = area(bbox1)
     intersect = intersection(bbox0, bbox1)
-
+    
     return intersect / (area0 + area1 - intersect + EPSILON)
 
-
-def show_landmarks(image, keypoints, bbox, fname):
-    """Show image with keypoints"""
-    #print("show_landmarks:", type(image), image.dtype)
-
-    image = image.numpy().astype(np.uint8)
-    image = np.array(image).transpose((1, 2, 0))
-    bboxes = bbox.numpy()
-    keypoints = keypoints.reshape(-1,2).numpy()
-    
-    fig = plt.figure()
-    plt.imshow(image)
-
-    # change 0 to nan
-    x = keypoints[:,0]
-    x[x==0] = np.nan
-
-    y = keypoints[:,1]
-    y[y==0] = np.nan
-
-    for (cx1,cy1,w,h) in bboxes:
-        rect = patches.Rectangle((cx1-w//2,cy1-h//2),w,h,linewidth=2,edgecolor='b',facecolor='none')
-        plt.gca().add_patch(rect)
-
-    plt.scatter(keypoints[:, 0], keypoints[:, 1], marker='.', c='r')
-    plt.pause(0.0001)  # pause a bit so that plots are updated
-    plt.savefig("aug_img/"+fname) 
-    plt.close()
-
+'''
 class IAA(object):
     def __init__(self, output_size, mode):
         assert isinstance(output_size, (int, tuple))
@@ -273,9 +232,7 @@ class IAA(object):
         else:
             new_bbox = [0.0,0.0,0.0,0.0]
 
-        #img = transform.resize(image_aug, (self.output_size[0], self.output_size[1]))
         sample['keypoints'][:,[0,1]] = keypoints 
-        #sample = {'image': image, 'keypoints': keypoints, 'bbox': bboxes, 'is_visible':is_visible, 'size': size}
         return {'image': image_aug, 'keypoints': sample['keypoints'], 'bbox': new_bboxes, 'is_visible':is_visible, 'size': size}
 
 
@@ -299,7 +256,7 @@ class ToTensor(object):
                 'bbox': torch.from_numpy(np.asarray(bbox)),
                 'size': sample['size'],
                 'is_visible': sample['is_visible']}
-
+'''
 
 #loss function
 class PPNLoss(nn.Module):

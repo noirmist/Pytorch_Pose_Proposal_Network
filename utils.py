@@ -83,3 +83,33 @@ def read_image(path, dtype=np.float32, color=True):
     else:
         # transpose (H, W, C) -> (C, H, W)
         return img.transpose((2, 0, 1))
+
+# Visutalization
+def show_landmarks(image, keypoints, bbox, fname):
+    """Show image with keypoints"""
+    #print("show_landmarks:", type(image), image.dtype)
+
+    image = image.numpy().astype(np.uint8)
+    image = np.array(image).transpose((1, 2, 0)) 
+    bboxes = bbox.numpy()
+    keypoints = keypoints.reshape(-1,2).numpy()
+    
+    fig = plt.figure()
+    plt.imshow(image)
+
+    # change 0 to nan
+    x = keypoints[:,0]
+    x[x==0] = np.nan
+
+    y = keypoints[:,1]
+    y[y==0] = np.nan
+
+    for (cx1,cy1,w,h) in bboxes:
+        rect = patches.Rectangle((cx1-w//2,cy1-h//2),w,h,linewidth=2,edgecolor='b',facecolor='none')
+        plt.gca().add_patch(rect)
+
+    plt.scatter(keypoints[:, 0], keypoints[:, 1], marker='.', c='r')
+    plt.pause(0.0001)  # pause a bit so that plots are updated
+    plt.savefig("aug_img/"+fname) 
+    plt.close()
+
