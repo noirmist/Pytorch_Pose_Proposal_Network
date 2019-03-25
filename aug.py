@@ -1,7 +1,14 @@
+import sys
+import random
 import numpy as np
 import imgaug as ia
 from imgaug import augmenters as iaa
 import torch
+from config import *
+
+import logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 class IAA(object):
     def __init__(self, output_size, mode):
@@ -41,28 +48,26 @@ class IAA(object):
                 iaa.Affine(
                     rotate=(-40, 40),
                     scale=(0.25, 2.5),
-                    fit_output=True
+                    #fit_output=True
                 ), # random rotate by -40-40deg and scale to 35-250%, affects keypoints
                 iaa.Multiply((0.5, 1.5)), # change brightness, doesn't affect keypoints
                 iaa.Fliplr(0.5),
                 iaa.Flipud(0.5),
-#                iaa.CropAndPad(
-#                    percent=(-0.2, 0.2),
-#                    pad_mode=["constant", "edge"],
-#                    pad_cval=(0, 128)
-#                ),
-                iaa.Scale({"height": self.output_size[0], "width": self.output_size[1]})
+                iaa.Crop(
+                    px = (int(0.1*random.random()*h), int(0.1*random.random()*w), int(0.1*random.random()*h), int(0.1*random.random()*w)), 
+                    #percent=(0, 0.2),
+                ),
+                iaa.Resize({"height": self.output_size[0], "width": self.output_size[1]})
             ])
-
         else:
             seq = iaa.Sequential([
-#                iaa.Affine(
-#                    rotate=(-40, 40),
-#                    scale=(0.25, 2.5)
-#                ), # random rotate by -40-40deg and scale to 35-250%, affects keypoints
+                iaa.Affine(
+                    rotate=(-40, 40),
+                    scale=(0.25, 2.5)
+                ), # random rotate by -40-40deg and scale to 35-250%, affects keypoints
                 iaa.Multiply((0.8, 1.5)), # change brightness, doesn't affect keypoints
-                #iaa.Fliplr(0.5),
-                #iaa.Flipud(0.5),
+                iaa.Fliplr(0.5),
+                iaa.Flipud(0.5),
                 iaa.Scale({"height": self.output_size[0], "width": self.output_size[1]})
             ])
 
@@ -70,8 +75,7 @@ class IAA(object):
         image_aug = seq_det.augment_images([image])[0]
         keypoints_aug = seq_det.augment_keypoints([kps_oi])[0]
         bbs_aug = seq_det.augment_bounding_boxes([bbs])[0]
-        bbs_aug = bbs_aug.remove_out_of_image().clip_out_of_image() 
-
+        #bbs_aug = bbs_aug[0].remove_out_of_image().clip_out_of_image() 
 
         # update keypoints and bbox
         cnt = 0
@@ -88,6 +92,60 @@ class IAA(object):
                 cnt +=1 
 
         keypoints = np.asarray(keypoints, dtype= np.float32)
+        # Delete empty keypoints
+        keypoints = list(keypoints.reshape(-1,len(name_list),2))
+        blacklist = []
+        for idx, (temp, tempbb, tempvis) in enumerate(zip(keypoints, bbs_aug.bounding_boxes, is_visible)):
+
+            if tempbb.x1 < 0.0:
+                tempbb.x1 = 0.0
+            elif tempbb.x1 > image_aug.shape[1]:
+                tempbb.x1 = image_aug.shape[1]-1
+
+            if tempbb.y1 < 0.0:
+                tempbb.y1 = 0.0
+            elif tempbb.y1 > image_aug.shape[0]:
+                tempbb.y1 = image_aug.shape[0]-1
+
+            if tempbb.x2 < 0.0:
+                tempbb.x2 = 0.0
+            elif tempbb.x2 > image_aug.shape[1]:
+                tempbb.x2 = image_aug.shape[1]-1
+
+            if tempbb.y2 < 0.0:
+                tempbb.y2 = 0.0
+            elif tempbb.y2 > image_aug.shape[0]:
+                tempbb.y2 = image_aug.shape[0]-1
+
+            if (np.unique(temp) == 0).all():
+                blacklist.append(idx)
+            
+            # Update keypoint visibility
+            for jdx, (yx, vis) in enumerate(zip(list(temp), tempvis)):
+                if (np.unique(yx) == 0).all():
+                    tempvis[jdx] = False
+#                print("check vis:", yx, vis)
+#                sys.stdout.flush()
+
+#            print(idx, "-th keypoints:", temp, "\n",idx, "-th aug bbox:", tempbb, "\n",idx, "-th fixed vis:", tempvis )
+#            sys.stdout.flush()
+            
+#        print("blacklist:", blacklist)
+#        sys.stdout.flush()
+        for i in sorted(blacklist, reverse=True):
+            del keypoints[i]
+            del bbs_aug.bounding_boxes[i]
+            del is_visible[i]
+
+        keypoints = np.asarray(keypoints, dtype= np.float32)
+
+#        for idx2, (temp, tempbb, tempvis) in enumerate(zip(keypoints, bbs_aug.bounding_boxes, is_visible)):
+#            print("refined", idx2, "-th keypoints:", temp, "\n",idx2, "-th aug bbox:", tempbb, "\n" , idx2,'-th visible', tempvis )
+#            sys.stdout.flush()
+#
+#        print("total boxes:", bbs_aug.bounding_boxes)
+#        sys.stdout.flush()
+
         new_bboxes = []
         if len(bbs_aug.bounding_boxes) > 0:
             for i in range(len(bbs_aug.bounding_boxes)):
@@ -101,8 +159,13 @@ class IAA(object):
         else:
             new_bbox = [0.0,0.0,0.0,0.0]
 
-        sample['keypoints'][:,[0,1]] = keypoints 
-        return {'image': image_aug, 'keypoints': sample['keypoints'], 'bbox': new_bboxes, 'is_visible':is_visible, 'size': size}
+#        print("total new boxes:", new_bboxes)
+#        sys.stdout.flush()
+        #sample['keypoints'][:,[0,1]] = keypoints 
+        #logger.info('keypoints : %s', sample['keypoints'])
+        #logger.info('bbox : %s', new_bboxes)
+
+        return {'image': image_aug, 'keypoints': keypoints, 'bbox': new_bboxes, 'is_visible':is_visible, 'size': size}
 
 
 class ToTensor(object):

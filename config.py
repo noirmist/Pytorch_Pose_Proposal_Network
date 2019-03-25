@@ -18,7 +18,6 @@ name_list = [
         "right_knee",
         "left_ankle",
         "right_ankle",
-        "thorax",
         "pelvis",
         "neck",
         "top"
@@ -43,20 +42,21 @@ COLOR_MAP = {
     'left_eye': (255, 212, 0),
     'right_ear': (231, 233, 185),
     'left_ear': (255, 255, 0),
-    'thorax': (143,106,35),
     'pelvis': (255,0,170),
     'neck': (237,185,185),
     'top': (115, 115, 115)
 }
 
 EDGES_BY_NAME = [
-    ['instance', 'thorax'],
-    ['thorax','neck'],
+    ['instance', 'neck'],
+    ['instance', 'nose'],
     ['neck', 'nose'],
-    ['nose', 'top'],
+    ['neck', 'top'],
+    ['neck', 'left_eye'],
     ['nose', 'left_eye'],
     ['left_eye', 'left_ear'],
     ['nose', 'right_eye'],
+    ['neck', 'right_eye'],
     ['right_eye', 'right_ear'],
     ['instance', 'left_shoulder'],
     ['left_shoulder', 'left_elbow'],
@@ -65,6 +65,8 @@ EDGES_BY_NAME = [
     ['right_shoulder', 'right_elbow'],
     ['right_elbow', 'right_wrist'],
     ['instance', 'pelvis'],
+    ['instance', 'left_hip'],
+    ['instance', 'right_hip'],
     ['pelvis', 'left_hip'],
     ['left_hip', 'left_knee'],
     ['left_knee', 'left_ankle'],
@@ -76,15 +78,20 @@ EDGES_BY_NAME = [
 KEYPOINT_NAMES = ['instance'] + name_list
 EDGES = [[KEYPOINT_NAMES.index(s), KEYPOINT_NAMES.index(d)] for s, d in EDGES_BY_NAME]
 
-TRACK_ORDER_0 = ['instance', 'thorax', 'neck', 'nose', 'left_eye', 'left_ear']
-TRACK_ORDER_1 = ['instance', 'thorax', 'neck', 'nose', 'right_eye', 'right_ear']
-TRACK_ORDER_2 = ['instance', 'thorax', 'neck', 'nose', 'top']
-TRACK_ORDER_3 = ['instance', 'left_shoulder', 'left_elbow', 'left_wrist']
-TRACK_ORDER_4 = ['instance', 'right_shoulder', 'right_elbow', 'right_wrist']
-TRACK_ORDER_5 = ['instance', 'pelvis', 'left_hip', 'left_knee', 'left_ankle']
-TRACK_ORDER_6 = ['instance', 'pelvis', 'right_hip', 'right_knee', 'right_ankle']
+TRACK_ORDER_0 = ['instance', 'neck', 'left_eye', 'left_ear']
+TRACK_ORDER_1 = ['instance', 'neck', 'right_eye', 'right_ear']
+TRACK_ORDER_2 = ['instance', 'nose', 'left_eye', 'left_ear']
+TRACK_ORDER_3 = ['instance', 'nose', 'right_eye', 'right_ear']
+TRACK_ORDER_4 = ['instance', 'neck', 'top']
+TRACK_ORDER_5 = ['instance', 'neck', 'nose']
+TRACK_ORDER_6 = ['instance', 'left_shoulder', 'left_elbow', 'left_wrist']
+TRACK_ORDER_7 = ['instance', 'right_shoulder', 'right_elbow', 'right_wrist']
+TRACK_ORDER_8 = ['instance', 'pelvis', 'left_hip']
+TRACK_ORDER_9 = ['instance', 'pelvis', 'right_hip']
+TRACK_ORDER_10 = ['instance', 'left_hip', 'left_knee', 'left_ankle']
+TRACK_ORDER_11 = ['instance', 'right_hip', 'right_knee', 'right_ankle']
 
-TRACK_ORDERS = [TRACK_ORDER_0, TRACK_ORDER_1, TRACK_ORDER_2, TRACK_ORDER_3, TRACK_ORDER_4, TRACK_ORDER_5, TRACK_ORDER_6]
+TRACK_ORDERS = [TRACK_ORDER_0, TRACK_ORDER_1, TRACK_ORDER_2, TRACK_ORDER_3, TRACK_ORDER_4, TRACK_ORDER_5, TRACK_ORDER_6, TRACK_ORDER_7, TRACK_ORDER_8, TRACK_ORDER_9, TRACK_ORDER_10, TRACK_ORDER_11]
 
 DIRECTED_GRAPHS = []
 

@@ -32,8 +32,9 @@ class PoseProposalNet(nn.Module):
         #self.conv3 = nn.Conv2d(512, 1311, kernel_size=1, stride=1)
 
         self.linear = nn.Linear(144,1024)
-        self.sigmoid = nn.Sigmoid()
         self.lRelu = nn.LeakyReLU(0.1)
+        self.Relu = nn.ReLU()
+        #self.sigmoid = nn.Sigmoid()
         self.bn = nn.BatchNorm2d(512)
 
     def forward(self, input):
@@ -49,7 +50,8 @@ class PoseProposalNet(nn.Module):
         lRelu2 = self.lRelu(conv2_out)
 
         conv3_out = self.conv3(lRelu2)
-        out = self.sigmoid(conv3_out)
+        #out = self.sigmoid(conv3_out)
+        out = self.Relu(conv3_out)
 
         return out
 

@@ -133,131 +133,6 @@ def iou(bbox0, bbox1):
     
     return intersect / (area0 + area1 - intersect + EPSILON)
 
-'''
-class IAA(object):
-    def __init__(self, output_size, mode):
-        assert isinstance(output_size, (int, tuple))
-        self.output_size = output_size
-        self.mode = mode
-
-    def __call__(self, sample):
-        #sample = {'image': image, 'keypoints': keypoints, 'bbox': bboxes, 'is_visible':is_visible, 'size': size}
-        image, keypoints, bboxes, is_visible, size = sample['image'], sample['keypoints'], sample['bbox'], sample['is_visible'], sample['size']
-
-        
-        h, w = image.shape[:2]
-
-        #filter existed keypoints , aka exclude zero value
-        kps_coords = []
-        kps = []
-        #keypoints = keypoints.reshape(-1,2).tolist()
-        for temp in keypoints:
-            if temp[0] >0 and temp[1] >0: 
-                kps_coords.append((temp[0],temp[1]))
-
-        for kp_x, kp_y in kps_coords:
-            kps.append(ia.Keypoint(x=kp_x, y=kp_y))
-
-        box_list = []
-        for bbox in bboxes:
-            box_list.append(ia.BoundingBox(x1 = bbox[0]-bbox[2]//2, 
-                                y1=bbox[1]-bbox[3]//2,
-                                x2=bbox[0]+bbox[2]//2, 
-                                y2=bbox[1]+bbox[3]//2))
-
-        bbs = ia.BoundingBoxesOnImage(box_list, shape=image.shape)
-        kps_oi = ia.KeypointsOnImage(kps, shape=image.shape)
-        if self.mode =='train':
-            seq = iaa.Sequential([
-                iaa.Affine(
-                    rotate=(-40, 40),
-                    scale=(0.25, 2.5),
-                    fit_output=True
-                ), # random rotate by -40-40deg and scale to 35-250%, affects keypoints
-                iaa.Multiply((0.5, 1.5)), # change brightness, doesn't affect keypoints
-                iaa.Fliplr(0.5),
-                iaa.Flipud(0.5),
-#                iaa.CropAndPad(
-#                    percent=(-0.2, 0.2),
-#                    pad_mode=["constant", "edge"],
-#                    pad_cval=(0, 128)
-#                ),
-                iaa.Scale({"height": self.output_size[0], "width": self.output_size[1]})
-            ])
-
-        else:
-            seq = iaa.Sequential([
-                iaa.Affine(
-                    rotate=(-40, 40),
-                    scale=(0.25, 2.5)
-                ), # random rotate by -40-40deg and scale to 35-250%, affects keypoints
-                iaa.Multiply((0.8, 1.5)), # change brightness, doesn't affect keypoints
-                iaa.Fliplr(0.5),
-                iaa.Flipud(0.5),
-                iaa.Scale({"height": self.output_size[0], "width": self.output_size[1]})
-            ])
-
-        seq_det = seq.to_deterministic()
-        image_aug = seq_det.augment_images([image])[0]
-        keypoints_aug = seq_det.augment_keypoints([kps_oi])[0]
-        bbs_aug = seq_det.augment_bounding_boxes([bbs])[0]
-        bbs_aug = bbs_aug.remove_out_of_image().clip_out_of_image() 
-
-
-        # update keypoints and bbox
-        cnt = 0
-        for temp in keypoints:
-            if temp[0] >0 and temp[1] >0:
-                # ignore outside keypoints
-                if keypoints_aug.keypoints[cnt].x >0 and keypoints_aug.keypoints[cnt].x < image_aug.shape[1] and \
-                    keypoints_aug.keypoints[cnt].y >0 and keypoints_aug.keypoints[cnt].y < image_aug.shape[0]:
-                    temp[0] = keypoints_aug.keypoints[cnt].x
-                    temp[1] = keypoints_aug.keypoints[cnt].y
-                else:
-                    temp[0] = 0.0 
-                    temp[1] = 0.0 
-                cnt +=1 
-
-        keypoints = np.asarray(keypoints, dtype= np.float32)
-        new_bboxes = []
-        if len(bbs_aug.bounding_boxes) > 0:
-            for i in range(len(bbs_aug.bounding_boxes)):
-                new_bbox = []
-                temp = bbs_aug.bounding_boxes[i]
-                new_bbox.append((temp.x2+temp.x1)/2)    #center x
-                new_bbox.append((temp.y2+temp.y1)/2)    #center y
-                new_bbox.append((temp.x2-temp.x1))      #width
-                new_bbox.append((temp.y2-temp.y1))      #height
-                new_bboxes.append(new_bbox)
-        else:
-            new_bbox = [0.0,0.0,0.0,0.0]
-
-        sample['keypoints'][:,[0,1]] = keypoints 
-        return {'image': image_aug, 'keypoints': sample['keypoints'], 'bbox': new_bboxes, 'is_visible':is_visible, 'size': size}
-
-
-class ToTensor(object):
-    """Convert ndarrays in sample to Tensors."""
-
-    def __call__(self, sample):
-        image, keypoints, bbox = sample['image'], sample['keypoints'], sample['bbox']
-
-        # swap color axis because
-        # PIL  image 
-        # numpy image: H x W x C
-        # torch image: C X H X W
-        #print("totensor img shape:", image.shape)
-        #sys.stdout.flush()
-        image = np.array(image).transpose((2, 0, 1))
-        image = torch.from_numpy(image)
-        image = image.float()
-        return {'image': image,
-                'keypoints': torch.from_numpy(keypoints),
-                'bbox': torch.from_numpy(np.asarray(bbox)),
-                'size': sample['size'],
-                'is_visible': sample['is_visible']}
-'''
-
 #loss function
 class PPNLoss(nn.Module):
     def __init__(self,
@@ -279,9 +154,6 @@ class PPNLoss(nn.Module):
         self.local_grid_size = local_grid_size
 
         self.dtype = np.float32
-
-        #TODO implement get_outsize
-        #self.outsize = self.get_outsize()
 
         self.outsize = outsize
         inW, inH = self.insize
@@ -332,31 +204,15 @@ class PPNLoss(nn.Module):
             outH, outW
         )
 
-#        print("feature_map shape:", feature_map.shape)
-#        print("resp", resp.dtype, resp.shape)
-#        print("conf", conf.dtype, conf.shape)
-#        print("sliced x", x.dtype, x.shape)
-#        print("sliced y", y.dtype, y.shape)
-#        print("sliced w", w.dtype, w.shape)
-#        print("sliced h", h.dtype, h.shape)
-#        print("sliced e", e.dtype, e.shape)
-#        print("te shape :", te.shape)
-#        sys.stdout.flush()
-
         (rx, ry), (rw, rh) = self.restore_xy(x, y), self.restore_size(w, h)
         (rtx, rty), (rtw, rth) = self.restore_xy(tx, ty), self.restore_size(tw, th)
-        #torch.set_printoptions(threshold=10000)
-        #print("tx:", tx.shape, tx[0][0])
-        #print("rtx:", rtx.shape, rtx[0][0])
         ious = iou((rx, ry, rw, rh), (rtx, rty, rtw, rth))
 
         # add weight where can't find keypoint
-        #xp = get_array_module(max_delta_ij)
         zero_place = torch.zeros(max_delta_ij.shape).cuda()
 
         zero_place[max_delta_ij < 0.5] = 0.0005
-        weight_ij = torch.min(max_delta_ij + zero_place,
-                                torch.ones(zero_place.shape, dtype=torch.float32).cuda())
+        weight_ij = torch.min(max_delta_ij + zero_place, torch.ones(zero_place.shape, dtype=torch.float32).cuda())
 
         # add weight where can't find keypoint
         #zero_place = np.zeros(delta.shape).astype(self.dtype)
@@ -385,14 +241,6 @@ class PPNLoss(nn.Module):
             self.lambda_coor * loss_coor + \
             self.lambda_size * loss_size + \
             self.lambda_limb * loss_limb
-
-#        print("loss:", loss.item())
-#        print("loss_resp:", loss_resp.item())
-#        print("loss_iou:", loss_iou.item())
-#        print("loss_coor:", loss_coor.item())
-#        print("loss_size:", loss_size.item())
-#        print("loss_limb:", loss_limb.item())
-    
         return loss, loss_resp, loss_iou, loss_coor, loss_size, loss_limb
 
 
@@ -456,10 +304,11 @@ def main_worker(gpu, ngpus_per_node, args):
         print("=> creating model '{}'".format(args.arch))
         model = models.__dict__[args.arch]()
 
+    local_grid_size=(25, 25)
     # Detach under avgpoll layer in Resnet
     modules = list(model.children())[:-2]
     model = nn.Sequential(*modules)
-    model = PoseProposalNet(model)
+    model = PoseProposalNet(model, outsize=(32, 32), local_grid_size=local_grid_size)
 
     if torch.cuda.device_count() > 1:
         model = torch.nn.DataParallel(model).cuda()
@@ -489,7 +338,7 @@ def main_worker(gpu, ngpus_per_node, args):
                                 insize=insize,
                                 outsize = outsize, 
                                 keypoint_names = KEYPOINT_NAMES ,
-                                local_grid_size = (9,9),
+                                local_grid_size = local_grid_size,
                                 edges = EDGES)
 
     train_loader = DataLoader(
@@ -515,18 +364,20 @@ def main_worker(gpu, ngpus_per_node, args):
                 insize=insize,
                 outsize=outsize,
                 keypoint_names = KEYPOINT_NAMES,
-                local_grid_size= (9,9), 
+                local_grid_size = local_grid_size,
                 edges = EDGES,
                 width_multiplier=1.0,
-                lambda_resp=0.25,
+                lambda_resp=0.5,
                 lambda_iou=1.0,
                 lambda_coor=5.0,
                 lambda_size=5.0,
                 lambda_limb=0.5
             ).cuda()
 
-    optimizer = torch.optim.SGD(model.parameters(), args.lr,
-                                momentum=args.momentum,
+#    optimizer = torch.optim.SGD(model.parameters(), args.lr,
+#                                momentum=args.momentum,
+#                                weight_decay=args.weight_decay)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr,
                                 weight_decay=args.weight_decay)
 
     # optionally resume from a checkpoint
@@ -554,6 +405,8 @@ def main_worker(gpu, ngpus_per_node, args):
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
+
+        adjust_learning_rate(optimizer, epoch, args)
 
         # train for one epoch
         train(train_loader, model, criterion, optimizer, epoch, args)
@@ -596,8 +449,6 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         # measure data loading time
         data_time.update(time.time() - end)
 
-        adjust_learning_rate(optimizer, i, args)
-
         img = target_img.cuda()
         delta = delta.cuda()
         max_delta_ij = max_delta_ij.cuda()
@@ -619,7 +470,6 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         losses_size.update(loss_size.item(), img.size(0))
         losses_limb.update(loss_limb.item(), img.size(0))
 
-
         # compute gradient and do SGD step
         optimizer.zero_grad()
         loss.backward()
@@ -630,13 +480,13 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         end = time.time()
 
         if i % args.print_freq == 0:
-            print('Epoch: [{0}][{1}/{2}]\t'
+            print('Epoch: [{0}][{1}/{2}] {learning_rate:.7f}\t'
                   'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                   'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
                   'Loss {loss.val:.4f} ({loss.avg:.4f}: {loss_resp.avg:.4f} + '
                   '{loss_iou.avg:.4f} + {loss_coor.avg:.4f} + '
                   '{loss_size.avg:.4f} + {loss_limb.avg:.4f})'.format(
-                   epoch, i, len(train_loader), batch_time=batch_time,
+                   epoch, i, len(train_loader), learning_rate=get_lr(optimizer), batch_time=batch_time,
                    data_time=data_time, loss=losses, loss_resp=losses_resp, loss_iou=losses_iou, loss_coor=losses_coor, loss_size=losses_size, loss_limb=losses_limb))
             sys.stdout.flush()
             plotter.plot('loss', 'train', 'PPN Loss', epoch*len(train_loader)+i, losses.avg) 
@@ -655,7 +505,6 @@ def validate(val_loader, model, criterion, epoch, args):
     losses_limb = AverageMeter()
 
     end = time.time()
-
 
     # switch to evaluate mode
     model.eval()
@@ -700,7 +549,7 @@ def validate(val_loader, model, criterion, epoch, args):
                       'Loss {loss.val:.4f} ({loss.avg:.4f}: {loss_resp.avg:.4f} + '
                       '{loss_iou.avg:.4f} + {loss_coor.avg:.4f} + '
                       '{loss_size.avg:.4f} + {loss_limb.avg:.4f})'.format(
-                       epoch, i, len(val_loader), batch_time=batch_time,
+                       epoch, i, len(val_loader),batch_time=batch_time,
                        data_time=data_time, loss=losses, loss_resp=losses_resp, loss_iou=losses_iou, loss_coor=losses_coor, loss_size=losses_size, loss_limb=losses_limb))
                 sys.stdout.flush()
     return losses.avg
@@ -713,7 +562,6 @@ def save_checkpoint(state, is_best, epochs, save_folder):
     if is_best:
         print("best checkpoints is saved!!!")
         shutil.copyfile(filename, save_folder+'/PPN_model_best.pth.tar')
-
 
 
 class AverageMeter(object):
@@ -750,9 +598,18 @@ class VisdomLinePlotter(object):
         else:
             self.viz.line(X=np.array([x]), Y=np.array([y]), env=self.env, win=self.plots[var_name], name=split_name, update = 'append')
 
-def adjust_learning_rate(optimizer, iters, args):
+def get_lr(optimizer):
+    for param_group in optimizer.param_groups:
+        return param_group['lr']
+
+def adjust_learning_rate(optimizer, epoch, args):
     """Sets the learning rate to the initial LR decayed linearly each iteration"""
-    lr = 0.007 * (1  - iters/260000)
+    #lr = 0.007 * (1  - iters/260000)
+    lr = get_lr(optimizer)
+
+    if epoch % 100 == 0 and epoch > 0 :
+        lr = 0.5* lr
+
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 

@@ -1,4 +1,4 @@
-import json, os
+import json, os, sys
 
 from skimage import io, transform
 from skimage.color import gray2rgb
@@ -11,7 +11,7 @@ from torch.utils.data import Dataset, DataLoader
 from config import *
 
 class KeypointsDataset(Dataset):
-    def __init__(self, json_file, root_dir, transform=None):
+    def __init__(self, json_file, root_dir, transform=None, draw=False):
         """
         Args:
             json_file (string): path to the json file with annotations
@@ -23,6 +23,7 @@ class KeypointsDataset(Dataset):
 
         self.root_dir = root_dir
         self.transform = transform
+        self.draw = draw
         # filename => keypoints, bbox, is_visible, is_labeled
         self.data = {}
 
@@ -64,6 +65,10 @@ class KeypointsDataset(Dataset):
 
         sample = {'image': image, 'keypoints': keypoints, 'bbox': bboxes, 'is_visible':is_visible, 'size': size}
 
+        # Draw image
+        if self.draw:
+            self.show_landmarks(sample['image'], sample['keypoints'], sample['bbox'], fname, idx)
+          
         #print("original_keypoints:", sample['keypoints'])
         if self.transform:
             sample = self.transform(sample)
@@ -74,19 +79,46 @@ class KeypointsDataset(Dataset):
         #, len(bboxes), len(sample['bbox']), sample['bbox'])
         #print("size:",len(size), "is_vis:", len(is_visible))
         #print("old keypoints:", sample['keypoints'].shape)
-        sample['keypoints'] = sample['keypoints'].reshape(-1,21,2) 
         #print("new keypoints:", sample['keypoints'].shape)
         #print(sample['keypoints'])
+        #sample['keypoints'] = sample['keypoints'].reshape(-1,len(name_list),2) 
 
-        #show_landmarks(sample['image'], sample['keypoints'], sample['bbox'], fname)
         return sample
 
+    # Visutalization
+    def show_landmarks(self, image, keypoints, bboxes, idx):
+        """Show image with keypoints"""
+        #print("show_landmarks:", type(image), image.dtype)
+
+        image = image.numpy().astype(np.uint8)
+        image = np.array(image).transpose((1, 2, 0)) 
+        keypoints = keypoints.reshape(-1,2).numpy()
+        
+        fig = plt.figure()
+        plt.imshow(image)
+
+        # change 0 to nan
+        x = keypoints[:,0].copy()
+        x[x==0] = np.nan
+
+        y = keypoints[:,1].copy()
+        y[y==0] = np.nan
+
+        for (cx1,cy1,w,h) in bboxes:
+            rect = patches.Rectangle((cx1-w//2,cy1-h//2),w,h,linewidth=2,edgecolor='b',facecolor='none')
+            plt.gca().add_patch(rect)
+
+        plt.scatter(keypoints[:, 0], keypoints[:, 1], marker='.', c='r')
+        plt.pause(0.0001)  # pause a bit so that plots are updated
+        plt.savefig("/media/hci-gpu/hdd/PPN/Aug_image/image_"+str(idx)+".png") 
+        plt.close()
+ 
 
 def custom_collate_fn(datas,
                     insize=(384,384),
-                    outsize=(12,12),
+                    outsize=(32,32),
                     keypoint_names = KEYPOINT_NAMES ,
-                    local_grid_size= (9,9),
+                    local_grid_size= (29,29),
                     edges = EDGES
                     ):
 
@@ -108,6 +140,7 @@ def custom_collate_fn(datas,
         image = data['image']
 
         keypoints = data['keypoints']
+
         bbox = data['bbox']
         is_visible = data['is_visible']
         size = data['size']
@@ -131,7 +164,19 @@ def custom_collate_fn(datas,
             partsW, partsH = parts, parts
             instanceW, instanceH = w, h
 
-            points = [[cx, cy]] + list(points)
+            points = [torch.tensor([cx.item(), cy.item()])] + list(points)
+
+            cnt = 0
+            temp_zero = torch.tensor([0., 0.])
+            for p in points:
+                if (temp_zero == p).all():
+                    cnt +=1
+
+            #print('number of points:', str(len(points)-cnt))
+            #sys.stdout.flush()
+
+            #print("bbox", cx.item(), cy.item(), w.item(), h.item())
+            #sys.stdout.flush()
 
             if w > 0 and h > 0:
                 labeled = [True] + list(labeled)
@@ -147,6 +192,12 @@ def custom_collate_fn(datas,
                 ix, iy = int(cx), int(cy)
                 sizeW = instanceW if k == 0 else partsW
                 sizeH = instanceH if k == 0 else partsH
+
+                # Decrease size from nose to ears
+                if k > 0 and k <= 5:
+                    sizeW = partsW//2
+                    sizeH = partsH//2
+
                 if 0 <= iy < outH and 0 <= ix < outW:
                     delta[k, iy, ix] = 1 
                     tx[k, iy, ix] = cx - ix
@@ -211,6 +262,4 @@ def custom_collate_fn(datas,
     te = torch.stack(tes,0)
 
     return image, delta, max_delta_ij, tx, ty, tw, th, te
-
-
 
