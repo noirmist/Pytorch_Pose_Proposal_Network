@@ -4,8 +4,9 @@ from skimage import io, transform
 from skimage.color import gray2rgb
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
+from PIL import ImageDraw, Image
+#import matplotlib.pyplot as plt
+#import matplotlib.patches as patches
 import torch.utils.data
 from torch.utils.data import Dataset, DataLoader
 from config import *
@@ -63,15 +64,17 @@ class KeypointsDataset(Dataset):
         is_visible = self.data[fname][2]
         size = self.data[fname][3]
 
-        sample = {'image': image, 'keypoints': keypoints, 'bbox': bboxes, 'is_visible':is_visible, 'size': size}
+        sample = {'image': image, 'keypoints': keypoints, 'bbox': bboxes, 'is_visible':is_visible, 'size': size, 'name': img_name }
 
-        # Draw image
-        if self.draw:
-            self.show_landmarks(sample['image'], sample['keypoints'], sample['bbox'], fname, idx)
           
         #print("original_keypoints:", sample['keypoints'])
         if self.transform:
             sample = self.transform(sample)
+
+        # Draw image
+        if self.draw:
+            self.show_landmarks(sample['image'], sample['keypoints'], sample['bbox'], fname, idx)
+
         #To Tensor
         #print("test file name:", self.filename_list[idx])
         #print("image_shape", sample['image'].shape)
@@ -86,39 +89,61 @@ class KeypointsDataset(Dataset):
         return sample
 
     # Visutalization
-    def show_landmarks(self, image, keypoints, bboxes, idx):
+    def show_landmarks(self, img, keypoints, bboxes, fname, idx):
         """Show image with keypoints"""
         #print("show_landmarks:", type(image), image.dtype)
 
-        image = image.numpy().astype(np.uint8)
-        image = np.array(image).transpose((1, 2, 0)) 
-        keypoints = keypoints.reshape(-1,2).numpy()
-        
-        fig = plt.figure()
-        plt.imshow(image)
+        pil_image = Image.fromarray(img.numpy().astype(np.uint8).transpose(1, 2, 0))
+        #image = image.numpy().astype(np.uint8)
+        #image = np.array(image).transpose((1, 2, 0)) 
+        drawer = ImageDraw.Draw(pil_image)
+
+        keypoints = list(keypoints.reshape(-1,2).numpy())
+        for i, key in enumerate(keypoints):
+            r = 2
+            x = key[0]
+            y = key[1]
+            #print("keypoints:",x, y, name_list[i%len(name_list)])
+            #sys.stdout.flush()
+            drawer.ellipse((x - r, y - r, x + r, y + r), fill=COLOR_MAP[name_list[i%len(name_list)]])
+        #fig = plt.figure()
+        #plt.imshow(image)
 
         # change 0 to nan
-        x = keypoints[:,0].copy()
-        x[x==0] = np.nan
+        #x = keypoints[:,0].copy()
+        #x[x==0] = np.nan
 
-        y = keypoints[:,1].copy()
-        y[y==0] = np.nan
+        #y = keypoints[:,1].copy()
+        #y[y==0] = np.nan
 
         for (cx1,cy1,w,h) in bboxes:
-            rect = patches.Rectangle((cx1-w//2,cy1-h//2),w,h,linewidth=2,edgecolor='b',facecolor='none')
-            plt.gca().add_patch(rect)
+            k = 0
+            xmin = cx1 - w//2
+            ymin = cy1 - h//2
+            xmax = cx1 + w//2
+            ymax = cy1 + h//2
 
-        plt.scatter(keypoints[:, 0], keypoints[:, 1], marker='.', c='r')
-        plt.pause(0.0001)  # pause a bit so that plots are updated
-        plt.savefig("/media/hci-gpu/hdd/PPN/Aug_image/image_"+str(idx)+".png") 
-        plt.close()
- 
+            drawer.rectangle(xy=[xmin, ymin, xmax, ymax],
+                             fill=None,
+                             outline=COLOR_MAP[KEYPOINT_NAMES[k]])
+            drawer.rectangle(xy=[xmin+1, ymin+1, xmax-1, ymax-1],
+                             fill=None,
+                             outline=COLOR_MAP[KEYPOINT_NAMES[k]])
+
+            #rect = patches.Rectangle((cx1-w//2,cy1-h//2),w,h,linewidth=2,edgecolor='b',facecolor='none')
+            #plt.gca().add_patch(rect)
+
+        #plt.scatter(keypoints[:, 0], keypoints[:, 1], marker='.', c='r')
+        #plt.pause(0.0001)  # pause a bit so that plots are updated
+        #plt.savefig("/media/hci-gpu/hdd/PPN/Aug_image/image_"+str(idx)+".png") 
+        #plt.close()
+        pil_image.save("/media/hci-gpu/hdd/PPN/Aug_image/image_"+str(idx)+".png") 
 
 def custom_collate_fn(datas,
                     insize=(384,384),
-                    outsize=(32,32),
+                    outsize=(12,12),
                     keypoint_names = KEYPOINT_NAMES ,
-                    local_grid_size= (29,29),
+                    local_grid_size= (9,9),
                     edges = EDGES
                     ):
 
@@ -145,6 +170,16 @@ def custom_collate_fn(datas,
         is_visible = data['is_visible']
         size = data['size']
 
+#        print("keypoints:", keypoints.shape)
+#        print("box:", bbox.shape)
+#        print("is_visible:", len(is_visible))
+#        print("size:", size)
+#        print("keypoints:", keypoints)
+#        print("box:", bbox)
+#        print("is_visible:", is_visible)
+#        print("size:", size)
+#        sys.stdout.flush()
+
         K = len(keypoint_names)
 
         delta = np.zeros((K, outH, outW), dtype=np.float32)
@@ -166,17 +201,16 @@ def custom_collate_fn(datas,
 
             points = [torch.tensor([cx.item(), cy.item()])] + list(points)
 
-            cnt = 0
-            temp_zero = torch.tensor([0., 0.])
-            for p in points:
-                if (temp_zero == p).all():
-                    cnt +=1
-
-            #print('number of points:', str(len(points)-cnt))
-            #sys.stdout.flush()
-
-            #print("bbox", cx.item(), cy.item(), w.item(), h.item())
-            #sys.stdout.flush()
+#            cnt = 0
+#            temp_zero = torch.tensor([0., 0.])
+#            for p in points:
+#                if (temp_zero == p).all():
+#                    cnt +=1
+#            print('number of points:', str(len(points)-cnt))
+#            sys.stdout.flush()
+#
+#            print("bbox", cx.item(), cy.item(), w.item(), h.item())
+#            sys.stdout.flush()
 
             if w > 0 and h > 0:
                 labeled = [True] + list(labeled)
@@ -193,10 +227,10 @@ def custom_collate_fn(datas,
                 sizeW = instanceW if k == 0 else partsW
                 sizeH = instanceH if k == 0 else partsH
 
-                # Decrease size from nose to ears
-                if k > 0 and k <= 5:
-                    sizeW = partsW//2
-                    sizeH = partsH//2
+#                # Decrease size from nose to ears
+#                if k > 0 and k <= 5:
+#                    sizeW = partsW//2
+#                    sizeH = partsH//2
 
                 if 0 <= iy < outH and 0 <= ix < outW:
                     delta[k, iy, ix] = 1 
@@ -216,9 +250,9 @@ def custom_collate_fn(datas,
                 jyx = (int(tar_xy[1] / gridH) - iyx[0] + local_grid_size[1] // 2,
                        int(tar_xy[0] / gridW) - iyx[1] + local_grid_size[0] // 2)
 
-                if iyx[0] < 0 or iyx[1] < 0 or iyx[0] >= outH or iyx[1] >= outW:
+                if iyx[0] <= 0 or iyx[1] <= 0 or iyx[0] >= outH or iyx[1] >= outW:
                     continue
-                if jyx[0] < 0 or jyx[1] < 0 or jyx[0] >= local_grid_size[1] or jyx[1] >= local_grid_size[0]:
+                if jyx[0] <= 0 or jyx[1] <= 0 or jyx[0] >= local_grid_size[1] or jyx[1] >= local_grid_size[0]:
                     continue
 
                 te[ei, jyx[0], jyx[1], iyx[0], iyx[1]] = 1
@@ -228,7 +262,7 @@ def custom_collate_fn(datas,
                                 outH, outW,
                                 local_grid_size[1], local_grid_size[0]), dtype=np.float32)
         for ei,(s,t) in enumerate(edges):
-            max_delta_ij[ei][delta[s]!=0]=1
+            max_delta_ij[ei][delta[s]!=0]=1.0
             pad_delta_t=np.pad(delta[t],(local_grid_size[1]//2,local_grid_size[0]//2),'constant')
             # Convolve filter
             for r,c in zip(*np.where(delta[s]==0)):
@@ -251,6 +285,7 @@ def custom_collate_fn(datas,
         ths.append(torch.from_numpy(th))
         tes.append(torch.from_numpy(te))
 
+
     # Stack data 
     image = torch.stack(images,0)
     delta = torch.stack(deltas,0)
@@ -260,6 +295,17 @@ def custom_collate_fn(datas,
     tw = torch.stack(tws,0)
     th = torch.stack(ths,0)
     te = torch.stack(tes,0)
+
+#    print("collate_fn_shape: image", image.shape)
+#    sys.stdout.flush()
+#    print("delta", delta.shape)
+#    print("max_delta_ij", max_delta_ij.shape)
+#    print("max_delta_ij", np.unique(max_delta_ij.numpy()))
+#    print("tx", tx.shape)
+#    print("ty", ty.shape)
+#    print("tw", tw.shape)
+#    print("th", th.shape)
+#    print("te", te.shape)
 
     return image, delta, max_delta_ij, tx, ty, tw, th, te
 

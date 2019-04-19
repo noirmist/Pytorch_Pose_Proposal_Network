@@ -39,6 +39,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
+from sys import maxsize
+from numpy import set_printoptions
+
+set_printoptions(threshold=maxsize)
+
 #from PIL import Image
 
 #import imgaug as ia
@@ -61,7 +66,7 @@ parser = argparse.ArgumentParser(description='PyTorch PoseProposalNet Training')
 parser.add_argument("-train", "--train_file", help="json file path")
 parser.add_argument("-val", "--val_file", help="json file path")
 parser.add_argument("-img", "--root_dir", help="path to train2017 or val2018")
-parser.add_argument("-imsize", "--image_size", default=384, help="set input image size")
+parser.add_argument("-imsize", "--image_size", default=384, type=int, help="set input image size")
 
 parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet18',
                     choices=model_names,
@@ -137,8 +142,8 @@ def iou(bbox0, bbox1):
 class PPNLoss(nn.Module):
     def __init__(self,
                 insize=(384,384),
-                outsize=(12,12),
-                keypoint_names = KEYPOINT_NAMES , local_grid_size= (9,9), edges = EDGES,
+                outsize=(24,24),
+                keypoint_names = KEYPOINT_NAMES , local_grid_size= (21,21), edges = EDGES,
                 width_multiplier=1.0,
                 lambda_resp=0.25,
                 lambda_iou=1.0,
@@ -208,17 +213,29 @@ class PPNLoss(nn.Module):
         (rtx, rty), (rtw, rth) = self.restore_xy(tx, ty), self.restore_size(tw, th)
         ious = iou((rx, ry, rw, rh), (rtx, rty, rtw, rth))
 
+
         # add weight where can't find keypoint
         zero_place = torch.zeros(max_delta_ij.shape).cuda()
 
         zero_place[max_delta_ij < 0.5] = 0.0005
-        weight_ij = torch.min(max_delta_ij + zero_place, torch.ones(zero_place.shape, dtype=torch.float32).cuda())
-
+        
+#        print("len keypoint name", K)
+#        print("max:", max_delta_ij.shape)
+#        #print("max output:", np.unique(max_delta_ij.cpu().detach().numpy()))
+#        print("zero:", list(zero_place.size()), zero_place.shape)
+#        #print("zero:", zero_place)
+#        #print("max:", max_delta_ij)
+#        #print("zero output:", np.unique(zero_place.cpu().detach().numpy()))
+#        sys.stdout.flush()
+        weight_ij = torch.min(torch.add(max_delta_ij, zero_place), torch.ones(zero_place.shape, dtype=torch.float32).cuda())
+        
+        #one_place = torch.ones(list(zero_place.size())).cuda()
+        #one_place = torch.ones([15, 25, 21, 21, 24, 24], dtype=torch.float32).cuda()
+        #one_place = torch.ones([15, 25, 21, 21, 24, 24]).cuda()
+        
         # add weight where can't find keypoint
-        #zero_place = np.zeros(delta.shape).astype(self.dtype)
         zero_place = torch.zeros(delta.shape).cuda()
         zero_place[delta < 0.5] = 0.0005
-        #weight = np.minimum(delta + zero_place, 1.0)
         weight = torch.min(delta + zero_place,
                                 torch.ones(zero_place.shape, dtype=torch.float32).cuda())
 
@@ -303,21 +320,30 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         print("=> creating model '{}'".format(args.arch))
         model = models.__dict__[args.arch]()
+    
+    #TODO Hardcoding local grid size
+    #local_grid_size=(29, 29)
+    local_grid_size=(21, 21)
 
-    local_grid_size=(25, 25)
     # Detach under avgpoll layer in Resnet
-    modules = list(model.children())[:-2]
+    modules = list(model.children())[:-3]
     model = nn.Sequential(*modules)
-    model = PoseProposalNet(model, outsize=(32, 32), local_grid_size=local_grid_size)
+    model = PoseProposalNet(model, local_grid_size=local_grid_size)
 
     if torch.cuda.device_count() > 1:
         model = torch.nn.DataParallel(model).cuda()
+    else:
+        model = model.cuda()
 
     # Test model to get outsize
-    inputs = torch.randn(1,3, args.image_size, args.image_size)
+    inputs = torch.randn(1,3, args.image_size, args.image_size).cuda()
     y =  model(inputs)
     _, _, outH, outW =y.shape
     outsize = (outW, outH)
+    print("outsize:",outsize)
+    print("y:",y.shape)
+    sys.stdout.flush()
+    # 384 to 512
     insize = (args.image_size, args.image_size)
 
     # Data loading code
@@ -356,7 +382,6 @@ def main_worker(gpu, ngpus_per_node, args):
         val_dataset,
         batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, collate_fn = collate_fn, pin_memory=True)
-
 
     # define loss function (criterion) and optimizer
     # define custom loss 
@@ -447,6 +472,11 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     end = time.time()
     for i, (target_img, delta, max_delta_ij, tx, ty, tw, th, te) in enumerate(train_loader):
         # measure data loading time
+#        print("train max:", max_delta_ij.shape)
+#        print("train max output:", np.unique(max_delta_ij.detach().numpy()))
+#        print("train image:", target_img.shape)
+#        sys.stdout.flush()
+
         data_time.update(time.time() - end)
 
         img = target_img.cuda()
@@ -515,6 +545,7 @@ def validate(val_loader, model, criterion, epoch, args):
         for i, (target_img, delta, max_delta_ij, tx, ty, tw, th, te) in enumerate(val_loader):
             
             data_time.update(time.time() - end)
+
 
             img = target_img.cuda()
             delta = delta.cuda()

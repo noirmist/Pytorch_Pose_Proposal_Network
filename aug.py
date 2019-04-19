@@ -18,7 +18,7 @@ class IAA(object):
 
     def __call__(self, sample):
         #sample = {'image': image, 'keypoints': keypoints, 'bbox': bboxes, 'is_visible':is_visible, 'size': size}
-        image, keypoints, bboxes, is_visible, size = sample['image'], sample['keypoints'], sample['bbox'], sample['is_visible'], sample['size']
+        image, keypoints, bboxes, is_visible, size ,name = sample['image'], sample['keypoints'], sample['bbox'], sample['is_visible'], sample['size'], sample['name']
 
 
         h, w = image.shape[:2]
@@ -28,7 +28,7 @@ class IAA(object):
         kps = []
         #keypoints = keypoints.reshape(-1,2).tolist()
         for temp in keypoints:
-            if temp[0] >0 and temp[1] >0:
+            if temp[0] !=0 or temp[1] !=0:
                 kps_coords.append((temp[0],temp[1]))
 
         for kp_x, kp_y in kps_coords:
@@ -65,9 +65,10 @@ class IAA(object):
                     rotate=(-40, 40),
                     scale=(0.25, 2.5)
                 ), # random rotate by -40-40deg and scale to 35-250%, affects keypoints
-                iaa.Multiply((0.8, 1.5)), # change brightness, doesn't affect keypoints
+                iaa.Multiply((0.8, 1.5)), # change brightness, doesn't affect keypoints.shape ==0:
+                
                 iaa.Fliplr(0.5),
-                iaa.Flipud(0.5),
+                iaa.Flipud(0.3),
                 iaa.Scale({"height": self.output_size[0], "width": self.output_size[1]})
             ])
 
@@ -78,44 +79,55 @@ class IAA(object):
         #bbs_aug = bbs_aug[0].remove_out_of_image().clip_out_of_image() 
 
         # update keypoints and bbox
+#        print(name, "aumented keypoints;", len(keypoints_aug.keypoints), keypoints_aug.keypoints)
+#        print(name, "previous keypoint:", keypoints)
+#        sys.stdout.flush()
         cnt = 0
-        for temp in keypoints:
-            if temp[0] >0 and temp[1] >0:
+        for ck, temp in enumerate(keypoints):
+            #print(ck, "-th", temp)
+            if temp[0] != 0 or temp[1] != 0:
                 # ignore outside keypoints
-                if keypoints_aug.keypoints[cnt].x >0 and keypoints_aug.keypoints[cnt].x < image_aug.shape[1] and \
-                    keypoints_aug.keypoints[cnt].y >0 and keypoints_aug.keypoints[cnt].y < image_aug.shape[0]:
+                #print("list index error:", temp, cnt, len(keypoints_aug.keypoints))
+                #sys.stdout.flush()
+                if keypoints_aug.keypoints[cnt].x >=0 and keypoints_aug.keypoints[cnt].x < image_aug.shape[1] and \
+                    keypoints_aug.keypoints[cnt].y >=0 and keypoints_aug.keypoints[cnt].y < image_aug.shape[0]:
                     temp[0] = keypoints_aug.keypoints[cnt].x
                     temp[1] = keypoints_aug.keypoints[cnt].y
                 else:
                     temp[0] = 0.0 
                     temp[1] = 0.0 
+                #print(temp, cnt, len(keypoints_aug.keypoints))
+                #sys.stdout.flush()
                 cnt +=1 
+#        print(name, "updated keypoint:", keypoints)
+#        sys.stdout.flush()
 
         keypoints = np.asarray(keypoints, dtype= np.float32)
         # Delete empty keypoints
         keypoints = list(keypoints.reshape(-1,len(name_list),2))
+
         blacklist = []
         for idx, (temp, tempbb, tempvis) in enumerate(zip(keypoints, bbs_aug.bounding_boxes, is_visible)):
 
             if tempbb.x1 < 0.0:
                 tempbb.x1 = 0.0
             elif tempbb.x1 > image_aug.shape[1]:
-                tempbb.x1 = image_aug.shape[1]-1
+                tempbb.x1 = image_aug.shape[1]
 
             if tempbb.y1 < 0.0:
                 tempbb.y1 = 0.0
             elif tempbb.y1 > image_aug.shape[0]:
-                tempbb.y1 = image_aug.shape[0]-1
+                tempbb.y1 = image_aug.shape[0]
 
             if tempbb.x2 < 0.0:
                 tempbb.x2 = 0.0
             elif tempbb.x2 > image_aug.shape[1]:
-                tempbb.x2 = image_aug.shape[1]-1
+                tempbb.x2 = image_aug.shape[1]
 
             if tempbb.y2 < 0.0:
                 tempbb.y2 = 0.0
             elif tempbb.y2 > image_aug.shape[0]:
-                tempbb.y2 = image_aug.shape[0]-1
+                tempbb.y2 = image_aug.shape[0]
 
             if (np.unique(temp) == 0).all():
                 blacklist.append(idx)
@@ -126,24 +138,29 @@ class IAA(object):
                     tempvis[jdx] = False
 #                print("check vis:", yx, vis)
 #                sys.stdout.flush()
-
-#            print(idx, "-th keypoints:", temp, "\n",idx, "-th aug bbox:", tempbb, "\n",idx, "-th fixed vis:", tempvis )
+#
+#            print(name, idx, "-th keypoints:", temp, "\n",idx, "-th aug bbox:", tempbb, "\n",idx, "-th fixed vis:", tempvis )
 #            sys.stdout.flush()
-            
+#           
 #        print("blacklist:", blacklist)
 #        sys.stdout.flush()
+
         for i in sorted(blacklist, reverse=True):
             del keypoints[i]
             del bbs_aug.bounding_boxes[i]
             del is_visible[i]
 
+        if len(keypoints) == 0:
+            keypoints.append(np.zeros((1,20,2) ))
+            
         keypoints = np.asarray(keypoints, dtype= np.float32)
+        
 
 #        for idx2, (temp, tempbb, tempvis) in enumerate(zip(keypoints, bbs_aug.bounding_boxes, is_visible)):
-#            print("refined", idx2, "-th keypoints:", temp, "\n",idx2, "-th aug bbox:", tempbb, "\n" , idx2,'-th visible', tempvis )
+#            print(name, "refined", idx2, "-th keypoints:", temp, "\n",idx2, "-th aug bbox:", tempbb, "\n" , idx2,'-th visible', tempvis )
 #            sys.stdout.flush()
 #
-#        print("total boxes:", bbs_aug.bounding_boxes)
+#        print(name, "total boxes:", bbs_aug.bounding_boxes)
 #        sys.stdout.flush()
 
         new_bboxes = []
@@ -157,11 +174,12 @@ class IAA(object):
                 new_bbox.append((temp.y2-temp.y1))      #height
                 new_bboxes.append(new_bbox)
         else:
-            new_bbox = [0.0,0.0,0.0,0.0]
+            new_bbox = torch.zeros(1,4)
+            is_visible.append(np.zeros((20), dtype=bool))
 
-#        print("total new boxes:", new_bboxes)
-#        sys.stdout.flush()
-        #sample['keypoints'][:,[0,1]] = keypoints 
+        
+        #print("total new boxes:", new_bboxes)
+        #sys.stdout.flush()
         #logger.info('keypoints : %s', sample['keypoints'])
         #logger.info('bbox : %s', new_bboxes)
 
