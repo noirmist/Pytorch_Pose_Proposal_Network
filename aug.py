@@ -68,7 +68,7 @@ class IAA(object):
                 iaa.Multiply((0.8, 1.5)), # change brightness, doesn't affect keypoints.shape ==0:
                 
                 iaa.Fliplr(0.5),
-                iaa.Flipud(0.3),
+                #iaa.Flipud(0.3),
                 iaa.Scale({"height": self.output_size[0], "width": self.output_size[1]})
             ])
 

@@ -44,7 +44,7 @@ from numpy import set_printoptions
 
 set_printoptions(threshold=maxsize)
 
-#from PIL import Image
+from PIL import Image
 
 #import imgaug as ia
 #from imgaug import augmenters as iaa
@@ -97,7 +97,7 @@ parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 parser.add_argument('--save', default='', type=str, metavar='PATH',
                     help='path to save checkpoint (default: none)')
-parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
+parser.add_argument('--evaluate', action='store_true',
                     help='evaluate model on validation set')
 parser.add_argument('--pretrained', dest='pretrained', action='store_true',
                     help='use pre-trained model')
@@ -152,7 +152,6 @@ class PPNLoss(nn.Module):
                 lambda_limb=0.5
                 ):
         super(PPNLoss, self).__init__()
-        #print("PPLloss init")
         self.insize = insize
         self.keypoint_names = keypoint_names
         self.edges = edges
@@ -172,7 +171,6 @@ class PPNLoss(nn.Module):
         self.lambda_coor = lambda_coor
         self.lambda_size = lambda_size
         self.lambda_limb = lambda_limb
-        #print("PPLloss init done")
 
     def restore_xy(self, x, y):
         gridW, gridH = self.gridsize
@@ -219,19 +217,7 @@ class PPNLoss(nn.Module):
 
         zero_place[max_delta_ij < 0.5] = 0.0005
         
-#        print("len keypoint name", K)
-#        print("max:", max_delta_ij.shape)
-#        #print("max output:", np.unique(max_delta_ij.cpu().detach().numpy()))
-#        print("zero:", list(zero_place.size()), zero_place.shape)
-#        #print("zero:", zero_place)
-#        #print("max:", max_delta_ij)
-#        #print("zero output:", np.unique(zero_place.cpu().detach().numpy()))
-#        sys.stdout.flush()
         weight_ij = torch.min(torch.add(max_delta_ij, zero_place), torch.ones(zero_place.shape, dtype=torch.float32).cuda())
-        
-        #one_place = torch.ones(list(zero_place.size())).cuda()
-        #one_place = torch.ones([15, 25, 21, 21, 24, 24], dtype=torch.float32).cuda()
-        #one_place = torch.ones([15, 25, 21, 21, 24, 24]).cuda()
         
         # add weight where can't find keypoint
         zero_place = torch.zeros(delta.shape).cuda()
@@ -399,11 +385,11 @@ def main_worker(gpu, ngpus_per_node, args):
                 lambda_limb=0.5
             ).cuda()
 
-#    optimizer = torch.optim.SGD(model.parameters(), args.lr,
-#                                momentum=args.momentum,
-#                                weight_decay=args.weight_decay)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr,
+    optimizer = torch.optim.SGD(model.parameters(), args.lr,
+                                momentum=args.momentum,
                                 weight_decay=args.weight_decay)
+#    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr,
+#                                weight_decay=args.weight_decay)
 
     # optionally resume from a checkpoint
     if args.resume:
@@ -413,7 +399,7 @@ def main_worker(gpu, ngpus_per_node, args):
             args.start_epoch = checkpoint['epoch']
             best_loss = checkpoint['best_loss']
             model.load_state_dict(checkpoint['state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
+            #optimizer.load_state_dict(checkpoint['optimizer'])
             print("=> loaded checkpoint '{}' (epoch {})"
                   .format(args.resume, checkpoint['epoch']))
         else:
@@ -422,7 +408,7 @@ def main_worker(gpu, ngpus_per_node, args):
     cudnn.benchmark = True
 
     if args.evaluate:
-        validate(val_loader, model, criterion, 1, args)
+        test_output(val_loader, model, criterion, 1, outsize, local_grid_size, args)
         return
 
 
@@ -523,6 +509,78 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
 
 #TODO function for evaluation like OKS
 
+def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, args):
+    from datatest import get_humans_by_feature
+    from datatest import draw_humans
+    data_time = AverageMeter()
+
+    end = time.time()
+
+    # switch to evaluate mode
+    model.eval()
+    outW, outH = outsize
+
+    with torch.no_grad():
+        end = time.time()
+
+        for i, (target_img, delta, max_delta_ij, tx, ty, tw, th, te) in enumerate(val_loader):
+            
+            data_time.update(time.time() - end)
+
+            img = target_img.cuda()
+            delta = delta.cuda()
+            max_delta_ij = max_delta_ij.cuda()
+            tx = tx.cuda()
+            ty = ty.cuda()
+            tw = tw.cuda()
+            th = th.cuda()
+            te = te.cuda()
+
+            # compute output
+            output = model(img)
+
+            K = len(KEYPOINT_NAMES)
+            B, _, _, _ = img.shape
+
+            #loss function with torch
+            resp = output[:, 0 * K:1 * K, :, :].cpu().numpy() # delta
+            conf = output[:, 1 * K:2 * K, :, :].cpu().numpy()
+            x = output[:, 2 * K:3 * K, :, :].cpu().numpy()
+            y = output[:, 3 * K:4 * K, :, :].cpu().numpy()
+            w = output[:, 4 * K:5 * K, :, :].cpu().numpy()
+            h = output[:, 5 * K:6 * K, :, :].cpu().numpy()
+            e = output[:, 6 * K:, :, :].reshape(
+                B,
+                len(EDGES),
+                local_grid_size[1], local_grid_size[0],
+                outH, outW
+            ).cpu().numpy()
+
+
+            resp = np.squeeze(resp, axis=0)
+            x = np.squeeze(x, axis=0)
+            y = np.squeeze(y, axis=0)
+            w = np.squeeze(w, axis=0)
+            h = np.squeeze(h, axis=0)
+            e = np.squeeze(e, axis=0)
+
+
+            logger.info("max resp value:"+str(np.amax(resp)))
+            logger.info("max conf value:"+str(np.amax(conf)))
+            humans = get_humans_by_feature(resp, x, y, w, h, e, detection_thresh=0.000001 )
+
+            pil_image = Image.fromarray(np.squeeze(img.cpu().numpy(), axis=0).astype(np.uint8).transpose(1, 2, 0)) 
+
+            pil_image = draw_humans(
+                keypoint_names=KEYPOINT_NAMES,
+                edges=EDGES,
+                pil_image=pil_image,
+                humans=humans
+            )   
+
+            pil_image.save('output/training_test/predict_test_result_'+str(i)+'.png', 'PNG')
+
+
 def validate(val_loader, model, criterion, epoch, args):
     batch_time = AverageMeter()
     losses = AverageMeter()
@@ -545,7 +603,6 @@ def validate(val_loader, model, criterion, epoch, args):
         for i, (target_img, delta, max_delta_ij, tx, ty, tw, th, te) in enumerate(val_loader):
             
             data_time.update(time.time() - end)
-
 
             img = target_img.cuda()
             delta = delta.cuda()

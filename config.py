@@ -102,3 +102,7 @@ for keypoints in TRACK_ORDERS:
 
 EPSILON = 1e-6
 
+
+#print(len(DIRECTED_GRAPHS), DIRECTED_GRAPHS)
+#print('edge:', len(EDGES))
+#print('edge by name:', len(EDGES_BY_NAME))
