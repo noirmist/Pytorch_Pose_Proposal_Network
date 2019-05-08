@@ -172,11 +172,12 @@ class PPNLoss(nn.Module):
         self.lambda_size = lambda_size
         self.lambda_limb = lambda_limb
 
+        self.X, self.Y = torch.Tensor(np.meshgrid(np.arange(outW, dtype=np.float32), np.arange(outH, dtype=np.float32))).cuda()
+
     def restore_xy(self, x, y):
         gridW, gridH = self.gridsize
         outW, outH = self.outsize
-        X, Y = torch.Tensor(np.meshgrid(np.arange(outW, dtype=np.float32), np.arange(outH, dtype=np.float32))).cuda()
-        return (x + X) * gridW, (y + Y) * gridH
+        return (x + self.X) * gridW, (y + self.Y) * gridH
 
     def restore_size(self, w, h):
         inW, inH = self.insize
@@ -213,25 +214,50 @@ class PPNLoss(nn.Module):
 
 
         # add weight where can't find keypoint
-        zero_place = torch.zeros(max_delta_ij.shape).cuda()
+        #zero_place = torch.zeros(max_delta_ij.shape, dtype=torch.float32)
+        #one_place = torch.ones(max_delta_ij.shape, dtype=torch.float32)
 
-        zero_place[max_delta_ij < 0.5] = 0.0005
+        #zero_place[max_delta_ij < 0.5] = 0.0005
         
-        weight_ij = torch.min(torch.add(max_delta_ij, zero_place), torch.ones(zero_place.shape, dtype=torch.float32).cuda())
-        
+        #weight_ij = torch.min(torch.add(max_delta_ij,zero_place), one_place).cuda()
+        #weight_ij = torch.max(max_delta_ij, 1.0)
+      
         # add weight where can't find keypoint
-        zero_place = torch.zeros(delta.shape).cuda()
-        zero_place[delta < 0.5] = 0.0005
-        weight = torch.min(delta + zero_place,
-                                torch.ones(zero_place.shape, dtype=torch.float32).cuda())
+#        delta_zero_place = torch.zeros(delta.shape, dtype=torch.float32)
+#        delta_one_place = torch.ones(delta.shape, dtype=torch.float32)
+#
+#        delta_zero_place[delta < 0.5] = 0.0005
+#        weight = torch.min(torch.add(delta.cpu() ,delta_zero_place), delta_one_place).cuda()
+#
+#        half = torch.zeros(delta.shape, dtype=torch.float32).cuda()
+#        half[delta < 0.5] = 0.5
 
-        half = torch.zeros(delta.shape).cuda()
+
+        '''
+        # add weight where can't find keypoint
+        xp = get_array_module(max_delta_ij)
+        zero_place = xp.zeros(max_delta_ij.shape).astype(self.dtype)
+        zero_place[max_delta_ij < 0.5] = 0.0005
+        weight_ij = xp.minimum(max_delta_ij + zero_place, 1.0)
+
+        xp = get_array_module(delta)
+        # add weight where can't find keypoint
+        zero_place = xp.zeros(delta.shape).astype(self.dtype)
+        zero_place[delta < 0.5] = 0.0005
+        weight = xp.minimum(delta + zero_place, 1.0)
+
+        half = xp.zeros(delta.shape).astype(self.dtype)
         half[delta < 0.5] = 0.5
+        '''
+
         loss_resp = torch.sum((resp - delta)**2, tuple(range(1, resp.dim())) )
         loss_iou = torch.sum(delta * (conf - ious)**2, tuple(range(1, conf.dim())))
-        loss_coor = torch.sum(weight * ((x - tx - half)**2 + (y - ty - half)**2), tuple(range(1, x.dim())))
-        loss_size = torch.sum(weight * ((torch.sqrt(torch.abs(w + EPSILON)) - torch.sqrt(torch.abs(tw + EPSILON)))**2 + (torch.sqrt(torch.abs(h + EPSILON)) - torch.sqrt(torch.abs(th + EPSILON)))**2 ), tuple(range(1, w.dim())))
-        loss_limb = torch.sum(weight_ij * (e - te)**2, tuple(range(1, e.dim())))
+        loss_coor = torch.sum(delta * ((x - tx)**2 + (y - ty)**2), tuple(range(1, x.dim())))
+        loss_size = torch.sum(delta * ((torch.sqrt(torch.abs(w + EPSILON)) - torch.sqrt(torch.abs(tw + EPSILON)))**2 + (torch.sqrt(torch.abs(h + EPSILON)) - torch.sqrt(torch.abs(th + EPSILON)))**2 ), tuple(range(1, w.dim())))
+        #loss_coor = torch.sum(weight * ((x - tx - half)**2 + (y - ty - half)**2), tuple(range(1, x.dim())))
+        #loss_size = torch.sum(weight * ((torch.sqrt(torch.abs(w + EPSILON)) - torch.sqrt(torch.abs(tw + EPSILON)))**2 + (torch.sqrt(torch.abs(h + EPSILON)) - torch.sqrt(torch.abs(th + EPSILON)))**2 ), tuple(range(1, w.dim())))
+        loss_limb = torch.sum(max_delta_ij * (e - te)**2, tuple(range(1, e.dim())))
+        #loss_limb = torch.sum(weight_ij * (e - te)**2, tuple(range(1, e.dim())))
 
         loss_resp = torch.mean(loss_resp)
         loss_iou = torch.mean(loss_iou)
@@ -411,7 +437,6 @@ def main_worker(gpu, ngpus_per_node, args):
         test_output(val_loader, model, criterion, 1, outsize, local_grid_size, args)
         return
 
-
     # Start trainin iterations
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
@@ -456,7 +481,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     model.train()
 
     end = time.time()
-    for i, (target_img, delta, max_delta_ij, tx, ty, tw, th, te) in enumerate(train_loader):
+    for i, (img, delta, max_delta_ij, tx, ty, tw, th, te) in enumerate(train_loader):
         # measure data loading time
 #        print("train max:", max_delta_ij.shape)
 #        print("train max output:", np.unique(max_delta_ij.detach().numpy()))
@@ -465,7 +490,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
 
         data_time.update(time.time() - end)
 
-        img = target_img.cuda()
+        img = img.cuda()
         delta = delta.cuda()
         max_delta_ij = max_delta_ij.cuda()
         tx = tx.cuda()
@@ -490,6 +515,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+        torch.cuda.empty_cache()
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -565,9 +591,9 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
             e = np.squeeze(e, axis=0)
 
 
-            logger.info("max resp value:"+str(np.amax(resp)))
-            logger.info("max conf value:"+str(np.amax(conf)))
-            humans = get_humans_by_feature(resp, x, y, w, h, e, detection_thresh=0.000001 )
+            logger.info("max resp value:"+str(np.amax(resp[0])))
+            logger.info("max conf value:"+str(np.amax(conf[0])))
+            humans = get_humans_by_feature(resp, x, y, w, h, e, detection_thresh=0.01 )
 
             pil_image = Image.fromarray(np.squeeze(img.cpu().numpy(), axis=0).astype(np.uint8).transpose(1, 2, 0)) 
 

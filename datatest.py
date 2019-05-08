@@ -81,7 +81,7 @@ def restore_size(w, h):
  
 
 # Parse result
-def get_humans_by_feature(delta, x, y, w, h, e, detection_thresh=0.30, min_num_keypoints=-1):
+def get_humans_by_feature(delta, x, y, w, h, e, detection_thresh=0.01, min_num_keypoints=1):
     start = time.time()
 
     #delta = resp * conf
@@ -101,13 +101,14 @@ def get_humans_by_feature(delta, x, y, w, h, e, detection_thresh=0.30, min_num_k
     # Find person boxes which better confidence than the threshold
     candidate = np.where(score > detection_thresh)
     logger.info('candidate: %s', candidate)
+    logger.info('score: %s', score)
     #logger.info('outsize: %s, %s', outW, outH)
         
     score = score[candidate]
 
     root_bbox = root_bbox[candidate]
     selected = non_maximum_suppression(
-        bbox=root_bbox, thresh=0.8, score=score)
+        bbox=root_bbox, thresh=1.0, score=score)
     logger.info('selected: %s', selected)
     root_bbox = root_bbox[selected]
     logger.info('detect instance {:.5f}'.format(time.time() - start))
@@ -129,6 +130,7 @@ def get_humans_by_feature(delta, x, y, w, h, e, detection_thresh=0.30, min_num_k
     for hxw in zip(candidate[0][selected], candidate[1][selected]):
         human = {ROOT_NODE: bbox[(ROOT_NODE, hxw[0], hxw[1])]}  # initial
         for graph in DIRECTED_GRAPHS:
+            
             eis, ts = graph
             i_h, i_w = hxw
             for ei, t in zip(eis, ts):
@@ -140,11 +142,6 @@ def get_humans_by_feature(delta, x, y, w, h, e, detection_thresh=0.30, min_num_k
 
                 logger.info('t: %s, j_h: %s, j_w: %s',t, j_h, j_w)
                 logger.info('delta: %s', delta[t, j_h, j_w])
-
-                #logger.info('delta: %s', delta[t])
-                #logger.info("f_delta: %s",np.array2string(delta[t], threshold=100, max_line_width=100))
-                #print("f_delta,",t, j_h, j_w, delta[t])
-                #sys.stdout.flush()
                 logger.info('bbox: %s ', bbox[(t, j_h, j_w)])
                 if j_h < 0 or j_w < 0 or j_h >= outH or j_w >= outW:
                     break
@@ -158,6 +155,8 @@ def get_humans_by_feature(delta, x, y, w, h, e, detection_thresh=0.30, min_num_k
             humans.append(human)
     logger.info('alchemy time {:.5f}'.format(time.time() - start))
     logger.info('num humans = {}'.format(len(humans)))
+    if len(humans) >0:
+        logger.info("human detected!")
     return humans
 # NMS
 def non_maximum_suppression(bbox, thresh, score=None, limit=None):
