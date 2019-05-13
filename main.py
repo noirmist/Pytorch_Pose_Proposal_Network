@@ -140,7 +140,7 @@ def iou(bbox0, bbox1):
 
 #loss function
 class PPNLoss(nn.Module):
-    def __init__(self,
+    def __init__(self, 
                 insize=(384,384),
                 outsize=(24,24),
                 keypoint_names = KEYPOINT_NAMES , local_grid_size= (21,21), edges = EDGES,
@@ -185,10 +185,7 @@ class PPNLoss(nn.Module):
 
     # forward input
     #loss = criterion(output, delta, max_delta_ij, tx, ty, tw, th, te)
-    def forward(self, image, feature_map, delta, max_delta_ij, tx, ty, tw, th, te):
-        #encoding target
-        #delta, max_delta_ij, tx, ty, tw, th, te = self.encode(bboxes, targets, size, is_visible)
-
+    def forward(self, image, feature_map, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te):
         ## TODO
         K = len(self.keypoint_names)
         B, _, _, _ = image.shape
@@ -212,52 +209,11 @@ class PPNLoss(nn.Module):
         (rtx, rty), (rtw, rth) = self.restore_xy(tx, ty), self.restore_size(tw, th)
         ious = iou((rx, ry, rw, rh), (rtx, rty, rtw, rth))
 
-
-        # add weight where can't find keypoint
-        #zero_place = torch.zeros(max_delta_ij.shape, dtype=torch.float32)
-        #one_place = torch.ones(max_delta_ij.shape, dtype=torch.float32)
-
-        #zero_place[max_delta_ij < 0.5] = 0.0005
-        
-        #weight_ij = torch.min(torch.add(max_delta_ij,zero_place), one_place).cuda()
-        #weight_ij = torch.max(max_delta_ij, 1.0)
-      
-        # add weight where can't find keypoint
-#        delta_zero_place = torch.zeros(delta.shape, dtype=torch.float32)
-#        delta_one_place = torch.ones(delta.shape, dtype=torch.float32)
-#
-#        delta_zero_place[delta < 0.5] = 0.0005
-#        weight = torch.min(torch.add(delta.cpu() ,delta_zero_place), delta_one_place).cuda()
-#
-#        half = torch.zeros(delta.shape, dtype=torch.float32).cuda()
-#        half[delta < 0.5] = 0.5
-
-
-        '''
-        # add weight where can't find keypoint
-        xp = get_array_module(max_delta_ij)
-        zero_place = xp.zeros(max_delta_ij.shape).astype(self.dtype)
-        zero_place[max_delta_ij < 0.5] = 0.0005
-        weight_ij = xp.minimum(max_delta_ij + zero_place, 1.0)
-
-        xp = get_array_module(delta)
-        # add weight where can't find keypoint
-        zero_place = xp.zeros(delta.shape).astype(self.dtype)
-        zero_place[delta < 0.5] = 0.0005
-        weight = xp.minimum(delta + zero_place, 1.0)
-
-        half = xp.zeros(delta.shape).astype(self.dtype)
-        half[delta < 0.5] = 0.5
-        '''
-
         loss_resp = torch.sum((resp - delta)**2, tuple(range(1, resp.dim())) )
         loss_iou = torch.sum(delta * (conf - ious)**2, tuple(range(1, conf.dim())))
-        loss_coor = torch.sum(delta * ((x - tx)**2 + (y - ty)**2), tuple(range(1, x.dim())))
-        loss_size = torch.sum(delta * ((torch.sqrt(torch.abs(w + EPSILON)) - torch.sqrt(torch.abs(tw + EPSILON)))**2 + (torch.sqrt(torch.abs(h + EPSILON)) - torch.sqrt(torch.abs(th + EPSILON)))**2 ), tuple(range(1, w.dim())))
-        #loss_coor = torch.sum(weight * ((x - tx - half)**2 + (y - ty - half)**2), tuple(range(1, x.dim())))
-        #loss_size = torch.sum(weight * ((torch.sqrt(torch.abs(w + EPSILON)) - torch.sqrt(torch.abs(tw + EPSILON)))**2 + (torch.sqrt(torch.abs(h + EPSILON)) - torch.sqrt(torch.abs(th + EPSILON)))**2 ), tuple(range(1, w.dim())))
-        loss_limb = torch.sum(max_delta_ij * (e - te)**2, tuple(range(1, e.dim())))
-        #loss_limb = torch.sum(weight_ij * (e - te)**2, tuple(range(1, e.dim())))
+        loss_coor = torch.sum(weight * ((x - tx_half)**2 + (y - ty_half)**2), tuple(range(1, x.dim())))
+        loss_size = torch.sum(weight * ((torch.sqrt(torch.abs(w + EPSILON)) - torch.sqrt(torch.abs(tw + EPSILON)))**2 + (torch.sqrt(torch.abs(h + EPSILON)) - torch.sqrt(torch.abs(th + EPSILON)))**2 ), tuple(range(1, w.dim())))
+        loss_limb = torch.sum(weight_ij * (e - te)**2, tuple(range(1, e.dim())))
 
         loss_resp = torch.mean(loss_resp)
         loss_iou = torch.mean(loss_iou)
@@ -361,11 +317,11 @@ def main_worker(gpu, ngpus_per_node, args):
     # Data loading code
     #normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
     #                                 std=[0.229, 0.224, 0.225])
-    train_dataset = KeypointsDataset(json_file = args.train_file, root_dir = args.root_dir+"/train2017/",
+    train_dataset = KeypointsDataset(json_file = args.train_file, root_dir = args.root_dir,
                     transform=transforms.Compose([
                         IAA(insize,'train'),
                         ToTensor()
-                    ]))
+                    ]), draw=False)
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
@@ -383,11 +339,11 @@ def main_worker(gpu, ngpus_per_node, args):
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, collate_fn = collate_fn, pin_memory=True, sampler=train_sampler)
 
-    val_dataset = KeypointsDataset(json_file = args.val_file, root_dir = args.root_dir+"/val2017/",
+    val_dataset = KeypointsDataset(json_file = args.val_file, root_dir = args.root_dir,
                 transform=transforms.Compose([
                     IAA(insize,'val'),
                     ToTensor()
-                ]))
+                ]), draw=False)
 
 
     val_loader = torch.utils.data.DataLoader(
@@ -434,6 +390,19 @@ def main_worker(gpu, ngpus_per_node, args):
     cudnn.benchmark = True
 
     if args.evaluate:
+
+        val_dataset = KeypointsDataset(json_file = args.val_file, root_dir = args.root_dir,
+                    transform=transforms.Compose([
+                        IAA(insize,'test'),
+                        ToTensor()
+                    ]), draw=False)
+
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset,
+            batch_size=args.batch_size, shuffle=False,
+            num_workers=args.workers, collate_fn = collate_fn, pin_memory=True)
+
+
         test_output(val_loader, model, criterion, 1, outsize, local_grid_size, args)
         return
 
@@ -445,7 +414,9 @@ def main_worker(gpu, ngpus_per_node, args):
         adjust_learning_rate(optimizer, epoch, args)
 
         # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch, args)
+        train_epoch_loss = train(train_loader, model, criterion, optimizer, epoch, args)
+
+        plotter.plot('loss', 'train(epoch)', 'PPN Loss', epoch*len(train_loader), train_epoch_loss) 
 
         # evaluate on validation set
         epoch_loss = validate(val_loader, model, criterion, epoch, args)
@@ -481,18 +452,18 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     model.train()
 
     end = time.time()
-    for i, (img, delta, max_delta_ij, tx, ty, tw, th, te) in enumerate(train_loader):
+    for i, (img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te) in enumerate(train_loader):
         # measure data loading time
-#        print("train max:", max_delta_ij.shape)
-#        print("train max output:", np.unique(max_delta_ij.detach().numpy()))
-#        print("train image:", target_img.shape)
-#        sys.stdout.flush()
-
         data_time.update(time.time() - end)
 
         img = img.cuda()
         delta = delta.cuda()
-        max_delta_ij = max_delta_ij.cuda()
+
+        weight = weight.cuda()
+        weight_ij = weight_ij.cuda()
+        tx_half = tx_half.cuda()
+        ty_half = ty_half.cuda()
+
         tx = tx.cuda()
         ty = ty.cuda()
         tw = tw.cuda()
@@ -501,7 +472,8 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
 
         # compute output
         output = model(img)
-        loss, loss_resp, loss_iou, loss_coor, loss_size, loss_limb = criterion(img, output, delta, max_delta_ij, tx, ty, tw, th, te)
+        loss, loss_resp, loss_iou, loss_coor, loss_size, loss_limb = criterion(
+                img, output, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te)
 
         # measure accuracy and record loss
         losses.update(loss.item(), img.size(0))
@@ -515,7 +487,8 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        torch.cuda.empty_cache()
+        del loss
+        del output
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -532,6 +505,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                    data_time=data_time, loss=losses, loss_resp=losses_resp, loss_iou=losses_iou, loss_coor=losses_coor, loss_size=losses_size, loss_limb=losses_limb))
             sys.stdout.flush()
             plotter.plot('loss', 'train', 'PPN Loss', epoch*len(train_loader)+i, losses.avg) 
+    return losses.avg
 
 #TODO function for evaluation like OKS
 
@@ -549,18 +523,11 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
     with torch.no_grad():
         end = time.time()
 
-        for i, (target_img, delta, max_delta_ij, tx, ty, tw, th, te) in enumerate(val_loader):
+        for i, (target_img, _, _, _, _, _, _, _, _, _, _) in enumerate(val_loader):
             
             data_time.update(time.time() - end)
 
             img = target_img.cuda()
-            delta = delta.cuda()
-            max_delta_ij = max_delta_ij.cuda()
-            tx = tx.cuda()
-            ty = ty.cuda()
-            tw = tw.cuda()
-            th = th.cuda()
-            te = te.cuda()
 
             # compute output
             output = model(img)
@@ -591,9 +558,9 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
             e = np.squeeze(e, axis=0)
 
 
-            logger.info("max resp value:"+str(np.amax(resp[0])))
-            logger.info("max conf value:"+str(np.amax(conf[0])))
-            humans = get_humans_by_feature(resp, x, y, w, h, e, detection_thresh=0.01 )
+            #logger.info("max resp value:"+str(np.amax(resp[0])))
+            #logger.info("max conf value:"+str(np.amax(conf[0])))
+            humans = get_humans_by_feature(resp, x, y, w, h, e, detection_thresh=0.0001)
 
             pil_image = Image.fromarray(np.squeeze(img.cpu().numpy(), axis=0).astype(np.uint8).transpose(1, 2, 0)) 
 
@@ -601,11 +568,15 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
                 keypoint_names=KEYPOINT_NAMES,
                 edges=EDGES,
                 pil_image=pil_image,
-                humans=humans
+                humans=humans,
+                visbbox= False,
+                gridOn = False
             )   
 
             pil_image.save('output/training_test/predict_test_result_'+str(i)+'.png', 'PNG')
 
+            if i>500:
+                break
 
 def validate(val_loader, model, criterion, epoch, args):
     batch_time = AverageMeter()
@@ -626,13 +597,18 @@ def validate(val_loader, model, criterion, epoch, args):
     with torch.no_grad():
         end = time.time()
 
-        for i, (target_img, delta, max_delta_ij, tx, ty, tw, th, te) in enumerate(val_loader):
+        for i, (target_img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te) in enumerate(val_loader):
             
             data_time.update(time.time() - end)
 
             img = target_img.cuda()
             delta = delta.cuda()
-            max_delta_ij = max_delta_ij.cuda()
+
+            weight = weight.cuda()
+            weight_ij = weight_ij.cuda()
+            tx_half = tx_half.cuda()
+            ty_half = ty_half.cuda()
+
             tx = tx.cuda()
             ty = ty.cuda()
             tw = tw.cuda()
@@ -641,7 +617,9 @@ def validate(val_loader, model, criterion, epoch, args):
 
             # compute output
             output = model(img)
-            loss, loss_resp, loss_iou, loss_coor, loss_size, loss_limb = criterion(img, output, delta, max_delta_ij, tx, ty, tw, th, te)
+
+            loss, loss_resp, loss_iou, loss_coor, loss_size, loss_limb = criterion(
+                    img, output, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te)
 
             # measure and record loss
             losses.update(loss.item(), img.size(0))
@@ -654,6 +632,9 @@ def validate(val_loader, model, criterion, epoch, args):
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
+
+            del loss
+            del output
 
             if i % args.print_freq == 0:
 
@@ -722,7 +703,7 @@ def adjust_learning_rate(optimizer, epoch, args):
     lr = get_lr(optimizer)
 
     if epoch % 100 == 0 and epoch > 0 :
-        lr = 0.5* lr
+        lr = 0.8* lr
 
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr

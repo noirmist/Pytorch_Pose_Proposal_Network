@@ -11,6 +11,11 @@ import torch.utils.data
 from torch.utils.data import Dataset, DataLoader
 from config import *
 
+import logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
+
 class KeypointsDataset(Dataset):
     def __init__(self, json_file, root_dir, transform=None, draw=False):
         """
@@ -66,6 +71,10 @@ class KeypointsDataset(Dataset):
 
         sample = {'image': image, 'keypoints': keypoints, 'bbox': bboxes, 'is_visible':is_visible, 'size': size, 'name': img_name }
 
+#        print("test file name:", self.filename_list[idx])
+#        sys.stdout.flush()
+#        print("old keypoints:", sample['keypoints'].shape)
+#        sys.stdout.flush()
           
         #print("original_keypoints:", sample['keypoints'])
         if self.transform:
@@ -75,15 +84,17 @@ class KeypointsDataset(Dataset):
         if self.draw:
             self.show_landmarks(sample['image'], sample['keypoints'], sample['bbox'], fname, idx)
 
-        #To Tensor
-        #print("test file name:", self.filename_list[idx])
-        #print("image_shape", sample['image'].shape)
-        #print("bbox:", sample['bbox'].shape)
-        #, len(bboxes), len(sample['bbox']), sample['bbox'])
-        #print("size:",len(size), "is_vis:", len(is_visible))
-        #print("old keypoints:", sample['keypoints'].shape)
-        #print("new keypoints:", sample['keypoints'].shape)
-        #print(sample['keypoints'])
+#        print("image_shape", sample['image'].shape)
+#        sys.stdout.flush()
+#        print("bbox:", sample['bbox'].shape)
+#        sys.stdout.flush()
+#        #, len(bboxes), len(sample['bbox']), sample['bbox'])
+#        print("size:",len(size), "is_vis:", len(is_visible))
+#        sys.stdout.flush()
+#        print("new keypoints:", sample['keypoints'].shape)
+#        sys.stdout.flush()
+#        print(sample['keypoints'])
+#        sys.stdout.flush()
         #sample['keypoints'] = sample['keypoints'].reshape(-1,len(name_list),2) 
 
         return sample
@@ -137,7 +148,7 @@ class KeypointsDataset(Dataset):
         #plt.pause(0.0001)  # pause a bit so that plots are updated
         #plt.savefig("/media/hci-gpu/hdd/PPN/Aug_image/image_"+str(idx)+".png") 
         #plt.close()
-        pil_image.save("/media/hci-gpu/hdd/PPN/Aug_image/image_"+str(idx)+".png") 
+        pil_image.save("/media/hci-gpu/hdd/PPN/Aug_image/"+fname) 
 
 def custom_collate_fn(datas,
                     insize=(384,384),
@@ -154,7 +165,12 @@ def custom_collate_fn(datas,
 
     images = []
     deltas = []
-    max_deltas_ij = []
+
+    weights = []
+    weights_ij = []
+    tx_halfs = []
+    ty_halfs = []
+
     txs = []
     tys = []
     tws = []
@@ -192,25 +208,12 @@ def custom_collate_fn(datas,
             local_grid_size[1], local_grid_size[0],
             outH, outW), dtype=np.float32)
 
-        # Set delta^i_k
-        # points(x,y)
 
         for (cx, cy, w, h), points, labeled, parts in zip(bbox, keypoints, is_visible, size):
             partsW, partsH = parts, parts
             instanceW, instanceH = w, h
 
             points = [torch.tensor([cx.item(), cy.item()])] + list(points)
-
-#            cnt = 0
-#            temp_zero = torch.tensor([0., 0.])
-#            for p in points:
-#                if (temp_zero == p).all():
-#                    cnt +=1
-#            print('number of points:', str(len(points)-cnt))
-#            sys.stdout.flush()
-#
-#            print("bbox", cx.item(), cy.item(), w.item(), h.item())
-#            sys.stdout.flush()
 
             if w > 0 and h > 0:
                 labeled = [True] + list(labeled)
@@ -226,11 +229,6 @@ def custom_collate_fn(datas,
                 ix, iy = int(cx), int(cy)
                 sizeW = instanceW if k == 0 else partsW
                 sizeH = instanceH if k == 0 else partsH
-
-#                # Decrease size from nose to ears
-#                if k > 0 and k <= 5:
-#                    sizeW = partsW//2
-#                    sizeH = partsH//2
 
                 if 0 <= iy < outH and 0 <= ix < outW:
                     delta[k, iy, ix] = 1 
@@ -275,10 +273,29 @@ def custom_collate_fn(datas,
 
         max_delta_ij = max_delta_ij.transpose(0,3,4,1,2)
 
-        # Make Sequence of data 
+        # Post Processing
+        zero_place = np.zeros(max_delta_ij.shape, dtype=np.float32)
+        zero_place[max_delta_ij < 0.5] = 0.0005
+        weight_ij = np.minimum(max_delta_ij + zero_place, 1.0)
+
+        # add weight where can't find keypoint
+        zero_place = np.zeros(delta.shape).astype(np.float32)
+        zero_place[delta < 0.5] = 0.0005
+        weight = np.minimum(delta + zero_place, 1.0)
+
+        half = np.zeros(delta.shape).astype(np.float32)
+        half[delta < 0.5] = 0.5
+        tx_half = tx + half
+        ty_half = ty + half
+
         images.append(image)
         deltas.append(torch.from_numpy(delta))
-        max_deltas_ij.append(torch.from_numpy(max_delta_ij))
+
+        weights.append(torch.from_numpy(weight))
+        weights_ij.append(torch.from_numpy(weight_ij))
+        tx_halfs.append(torch.from_numpy(tx_half))
+        ty_halfs.append(torch.from_numpy(ty_half))
+
         txs.append(torch.from_numpy(tx))
         tys.append(torch.from_numpy(ty))
         tws.append(torch.from_numpy(tw))
@@ -289,14 +306,17 @@ def custom_collate_fn(datas,
     # Stack data 
     image = torch.stack(images,0)
     delta = torch.stack(deltas,0)
-    max_delta_ij = torch.stack(max_deltas_ij,0)
+    weight = torch.stack(weights,0)
+    weight_ij = torch.stack(weights_ij,0)
+    tx_half = torch.stack(tx_halfs,0)
+    ty_half = torch.stack(ty_halfs,0)
     tx = torch.stack(txs,0)
     ty = torch.stack(tys,0)
     tw = torch.stack(tws,0)
     th = torch.stack(ths,0)
     te = torch.stack(tes,0)
 
-#    print("collate_fn_shape: image", image.shape)
+#    pront("collate_fn_shape: image", image.shape)
 #    sys.stdout.flush()
 #    print("delta", delta.shape)
 #    print("max_delta_ij", max_delta_ij.shape)
@@ -307,5 +327,5 @@ def custom_collate_fn(datas,
 #    print("th", th.shape)
 #    print("te", te.shape)
 
-    return image, delta, max_delta_ij, tx, ty, tw, th, te
+    return image, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te
 

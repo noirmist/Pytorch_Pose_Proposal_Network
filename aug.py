@@ -51,27 +51,36 @@ class IAA(object):
                     #fit_output=True
                 ), # random rotate by -40-40deg and scale to 35-250%, affects keypoints
                 iaa.Multiply((0.5, 1.5)), # change brightness, doesn't affect keypoints
-                iaa.Fliplr(0.5),
-                iaa.Flipud(0.5),
+                #iaa.Fliplr(0.5),
+                #iaa.Flipud(0.5),
                 iaa.Crop(
                     px = (int(0.1*random.random()*h), int(0.1*random.random()*w), int(0.1*random.random()*h), int(0.1*random.random()*w)), 
                     #percent=(0, 0.2),
                 ),
                 iaa.Resize({"height": self.output_size[0], "width": self.output_size[1]})
             ])
-        else:
+        elif self.mode =='val':
             seq = iaa.Sequential([
                 iaa.Affine(
                     rotate=(-40, 40),
                     scale=(0.25, 2.5)
                 ), # random rotate by -40-40deg and scale to 35-250%, affects keypoints
-                iaa.Multiply((0.8, 1.5)), # change brightness, doesn't affect keypoints.shape ==0:
+                #iaa.Multiply((0.8, 1.5)), # change brightness, doesn't affect keypoints.shape ==0:
+                iaa.Multiply((0.5, 1.5)), # change brightness, doesn't affect keypoints.shape ==0:
                 
-                iaa.Fliplr(0.5),
-                #iaa.Flipud(0.3),
+                #iaa.Fliplr(0.5),
+                #iaa.Flipud(0.5),
+                iaa.Crop(
+                    px = (int(0.1*random.random()*h), int(0.1*random.random()*w), int(0.1*random.random()*h), int(0.1*random.random()*w)), 
+                    #percent=(0, 0.2),
+                ),
+                iaa.Resize({"height": self.output_size[0], "width": self.output_size[1]})
+            ])
+        elif self.mode == 'test':
+            seq = iaa.Sequential([
+                #iaa.Fliplr(0.5),
                 iaa.Scale({"height": self.output_size[0], "width": self.output_size[1]})
             ])
-
         seq_det = seq.to_deterministic()
         image_aug = seq_det.augment_images([image])[0]
         keypoints_aug = seq_det.augment_keypoints([kps_oi])[0]
@@ -151,7 +160,7 @@ class IAA(object):
             del is_visible[i]
 
         if len(keypoints) == 0:
-            keypoints.append(np.zeros((1,20,2) ))
+            keypoints.append(np.zeros((len(name_list),2) ))
             
         keypoints = np.asarray(keypoints, dtype= np.float32)
         

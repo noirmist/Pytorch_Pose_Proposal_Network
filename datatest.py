@@ -94,21 +94,23 @@ def get_humans_by_feature(delta, x, y, w, h, e, detection_thresh=0.01, min_num_k
     ymin, ymax = ry - rh / 2, ry + rh / 2
     xmin, xmax = rx - rw / 2, rx + rw / 2 
     bbox = np.array([ymin, xmin, ymax, xmax])
+    #logger.info('bbox: %s', bbox.shape) #bbox: (4, 17, 24, 24)
     bbox = bbox.transpose(1, 2, 3, 0)
+    #logger.info('tr bbox: %s', bbox.shape)  #tr bbox: (17, 24, 24, 4)
     root_bbox = bbox[ROOT_NODE]
     score = delta[ROOT_NODE]
     #logger.info('score: %s', score.shape)
     # Find person boxes which better confidence than the threshold
     candidate = np.where(score > detection_thresh)
-    logger.info('candidate: %s', candidate)
-    logger.info('score: %s', score)
+    #logger.info('candidate: %s', candidate)
+    #logger.info('score: %s', score)
     #logger.info('outsize: %s, %s', outW, outH)
         
     score = score[candidate]
 
     root_bbox = root_bbox[candidate]
     selected = non_maximum_suppression(
-        bbox=root_bbox, thresh=1.0, score=score)
+        bbox=root_bbox, thresh=0.3, score=score)
     logger.info('selected: %s', selected)
     root_bbox = root_bbox[selected]
     logger.info('detect instance {:.5f}'.format(time.time() - start))
@@ -117,14 +119,14 @@ def get_humans_by_feature(delta, x, y, w, h, e, detection_thresh=0.01, min_num_k
 
     humans = []
 
-#    logger.info('delta shape: %s', delta.shape)
+    #logger.info('delta shape: %s', delta.shape)
 #    logger.info('x shape: %s', x.shape)
 #    logger.info('y shape: %s', y.shape)
 #    logger.info('w shape: %s', w.shape)
 #    logger.info('h shape: %s', h.shape)
 #    logger.info('e shape: %s', e.shape)
     e = e.transpose(0, 3, 4, 1, 2)
-#    logger.info('e shape: %s', e.shape)
+    #logger.info('e shape: %s', e.shape)
     ei = 0  # index of edges which contains ROOT_NODE as begin
     # alchemy_on_humans
     for hxw in zip(candidate[0][selected], candidate[1][selected]):
@@ -137,14 +139,15 @@ def get_humans_by_feature(delta, x, y, w, h, e, detection_thresh=0.01, min_num_k
                 index = (ei, i_h, i_w)  # must be tuple
                 u_ind = np.unravel_index(np.argmax(e[index]), e[index].shape)
                 logger.info('u_ind: %s', u_ind)
-                j_h = i_h + u_ind[0] - local_grid_size[1] // 2
-                j_w = i_w + u_ind[1] - local_grid_size[0] // 2
+                j_h = i_h + u_ind[0] - (local_grid_size[1] // 2)
+                j_w = i_w + u_ind[1] - (local_grid_size[0] // 2)
+
+                if j_h < 0 or j_w < 0 or j_h >= outH or j_w >= outW:
+                    break
 
                 logger.info('t: %s, j_h: %s, j_w: %s',t, j_h, j_w)
                 logger.info('delta: %s', delta[t, j_h, j_w])
                 logger.info('bbox: %s ', bbox[(t, j_h, j_w)])
-                if j_h < 0 or j_w < 0 or j_h >= outH or j_w >= outW:
-                    break
                 if delta[t, j_h, j_w] < detection_thresh:
                     break
                 human[t] = bbox[(t, j_h, j_w)]
@@ -160,7 +163,7 @@ def get_humans_by_feature(delta, x, y, w, h, e, detection_thresh=0.01, min_num_k
     return humans
 # NMS
 def non_maximum_suppression(bbox, thresh, score=None, limit=None):
-    logger.info('nms bbox= {}'.format(bbox))
+    #logger.info('nms bbox= {}'.format(bbox))
 
     if len(bbox) == 0:
         return np.zeros((0,), dtype=np.int32)
