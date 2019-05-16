@@ -47,10 +47,10 @@ class IAA(object):
             seq = iaa.Sequential([
                 iaa.Affine(
                     rotate=(-40, 40),
-                    scale=(0.25, 2.5),
+                    scale=(0.25, 3.0),
                     #fit_output=True
                 ), # random rotate by -40-40deg and scale to 35-250%, affects keypoints
-                iaa.Multiply((0.5, 1.5)), # change brightness, doesn't affect keypoints
+                #iaa.Multiply((0.5, 1.5)), # change brightness, doesn't affect keypoints
                 #iaa.Fliplr(0.5),
                 #iaa.Flipud(0.5),
                 iaa.Crop(
@@ -59,24 +59,7 @@ class IAA(object):
                 ),
                 iaa.Resize({"height": self.output_size[0], "width": self.output_size[1]})
             ])
-        elif self.mode =='val':
-            seq = iaa.Sequential([
-                iaa.Affine(
-                    rotate=(-40, 40),
-                    scale=(0.25, 2.5)
-                ), # random rotate by -40-40deg and scale to 35-250%, affects keypoints
-                #iaa.Multiply((0.8, 1.5)), # change brightness, doesn't affect keypoints.shape ==0:
-                iaa.Multiply((0.5, 1.5)), # change brightness, doesn't affect keypoints.shape ==0:
-                
-                #iaa.Fliplr(0.5),
-                #iaa.Flipud(0.5),
-                iaa.Crop(
-                    px = (int(0.1*random.random()*h), int(0.1*random.random()*w), int(0.1*random.random()*h), int(0.1*random.random()*w)), 
-                    #percent=(0, 0.2),
-                ),
-                iaa.Resize({"height": self.output_size[0], "width": self.output_size[1]})
-            ])
-        elif self.mode == 'test':
+        else:
             seq = iaa.Sequential([
                 #iaa.Fliplr(0.5),
                 iaa.Scale({"height": self.output_size[0], "width": self.output_size[1]})

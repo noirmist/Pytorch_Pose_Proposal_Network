@@ -22,7 +22,6 @@ import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 import torch.optim
-import torch.multiprocessing as mp
 import torch.utils.data
 from torch.utils.data import Dataset, DataLoader
 
@@ -38,6 +37,15 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+
+try:
+    from apex.parallel import DistributedDataParallel as DDP
+    from apex.fp16_utils import *
+    from apex import amp, optimizers
+    from apex.multi_tensor_apply import multi_tensor_applier
+except ImportError:
+    raise ImportError("Please install apex from https://www.github.com/nvidia/apex to run this example.")
+
 
 from sys import maxsize
 from numpy import set_printoptions
@@ -103,17 +111,30 @@ parser.add_argument('--pretrained', dest='pretrained', action='store_true',
                     help='use pre-trained model')
 parser.add_argument('--seed', default=None, type=int,
                     help='seed for initializing training. ')
-parser.add_argument('--gpu', default=None, type=int,
-                    help='GPU id to use.')
+#parser.add_argument('--gpu', default=None, type=int,
+#                    help='GPU id to use.')
+parser.add_argument('--parallel_ckpt', action='store_true')
+parser.add_argument('--deterministic', action='store_true')
+
+parser.add_argument('--distributed', action='store_true')
+
+parser.add_argument("--local_rank", default=0, type=int)
+parser.add_argument('--sync_bn', action='store_true',
+                    help='enabling apex sync BN.')
+
+parser.add_argument('--opt-level', type=str, default='O0')
+parser.add_argument('--keep-batchnorm-fp32', type=str, default=None)
+parser.add_argument('--loss-scale', type=str, default=None)
+
 parser.add_argument('--world-size', default=-1, type=int,
                     help='number of nodes for distributed training')
-parser.add_argument('--rank', default=-1, type=int,
-                    help='node rank for distributed training')
-parser.add_argument('--multiprocessing-distributed', action='store_true',
-                    help='Use multi-processing distributed training to launch '
-                         'N processes per node, which has N GPUs. This is the '
-                         'fastest way to use PyTorch for either single node or '
-                         'multi node data parallel training')
+#parser.add_argument('--rank', default=-1, type=int,
+#                    help='node rank for distributed training')
+#parser.add_argument('--multiprocessing-distributed', action='store_true',
+#                    help='Use multi-processing distributed training to launch '
+#                         'N processes per node, which has N GPUs. This is the '
+#                         'fastest way to use PyTorch for either single node or '
+#                         'multi node data parallel training')
 
 
 # Augment implementation
@@ -229,11 +250,15 @@ class PPNLoss(nn.Module):
         return loss, loss_resp, loss_iou, loss_coor, loss_size, loss_limb
 
 
-best_loss = float("inf")
+best_loss = 1e30000
 
 def main():
+    global best_loss
     args = parser.parse_args()
-
+    
+    print("opt_level = {}".format(args.opt_level))
+    print("keep_batchnorm_fp32 = {}".format(args.keep_batchnorm_fp32), type(args.keep_batchnorm_fp32))
+    print("loss_scale = {}".format(args.loss_scale), type(args.loss_scale))
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -245,41 +270,23 @@ def main():
                       'You may see unexpected behavior when restarting '
                       'from checkpoints.')
 
-    if args.gpu is not None:
-        warnings.warn('You have chosen a specific GPU. This will completely '
-                      'disable data parallelism.')
+    #args.distributed = False
+    #if 'WORLD_SIZE' in os.environ:
+    #    args.distributed = int(os.environ['WORLD_SIZE']) > 1
+    #args.distributed = int(args.world_size) > 1
 
-    args.distributed = args.multiprocessing_distributed
-
-    ngpus_per_node = torch.cuda.device_count()
-
-    if args.multiprocessing_distributed:
-        # Since we have ngpus_per_node processes per node, the total world_size
-        # needs to be adjusted accordingly
-        args.world_size = ngpus_per_node * args.world_size
-        # Use torch.multiprocessing.spawn to launch distributed processes: the
-        # main_worker process function
-        mp.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, args))
-    else:
-        # Simply call main_worker function
-        main_worker(args.gpu, ngpus_per_node, args)
-
-
-def main_worker(gpu, ngpus_per_node, args):
-    global best_loss
-    args.gpu = gpu
-
-    if args.gpu is not None:
-        print("Use GPU: {} for training".format(args.gpu))
+    args.gpu = 0
+    args.world_size = 1
 
     if args.distributed:
-        if args.multiprocessing_distributed:
-            # For multiprocessing distributed training, rank needs to be the
-            # global rank among all the processes
-            args.rank = args.rank * ngpus_per_node + gpu
+        args.gpu = args.local_rank
+        torch.cuda.set_device(args.gpu)
+        torch.distributed.init_process_group(backend='nccl',
+                                             init_method='env://')
+        args.world_size = torch.distributed.get_world_size()
 
-        dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
-                                world_size=args.world_size, rank=args.rank)
+    print("world_size:", args.world_size)
+    assert torch.backends.cudnn.enabled, "Amp requires cudnn backend to be enabled."
 
     # create model
     if args.pretrained:
@@ -288,7 +295,8 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         print("=> creating model '{}'".format(args.arch))
         model = models.__dict__[args.arch]()
-    
+   
+
     #TODO Hardcoding local grid size
     #local_grid_size=(29, 29)
     local_grid_size=(21, 21)
@@ -298,10 +306,12 @@ def main_worker(gpu, ngpus_per_node, args):
     model = nn.Sequential(*modules)
     model = PoseProposalNet(model, local_grid_size=local_grid_size)
 
-    if torch.cuda.device_count() > 1:
-        model = torch.nn.DataParallel(model).cuda()
-    else:
-        model = model.cuda()
+    if args.sync_bn:
+        import apex
+        print("using apex synced BN")
+        model = apex.parallel.convert_syncbn_model(model) 
+
+    model = model.cuda()
 
     # Test model to get outsize
     inputs = torch.randn(1,3, args.image_size, args.image_size).cuda()
@@ -314,6 +324,31 @@ def main_worker(gpu, ngpus_per_node, args):
     # 384 to 512
     insize = (args.image_size, args.image_size)
 
+    # Scale learning rate based on global batch size
+    args.lr = args.lr*float(args.batch_size*args.world_size)/256. 
+    optimizer = torch.optim.SGD(model.parameters(), args.lr,
+                                momentum=args.momentum,
+                                weight_decay=args.weight_decay)
+
+    # Initialize Amp.  Amp accepts either values or strings for the optional override arguments,
+    # for convenient interoperation with argparse.
+    model, optimizer = amp.initialize(model, optimizer,
+                                      opt_level=args.opt_level,
+                                      keep_batchnorm_fp32=True,
+                                      loss_scale=args.loss_scale
+                                      )
+
+    # For distributed training, wrap the model with apex.parallel.DistributedDataParallel.
+    # This must be done AFTER the call to amp.initialize.  If model = DDP(model) is called
+    # before model, ... = amp.initialize(model, ...), the call to amp.initialize may alter
+    # the types of model's parameters in a way that disrupts or destroys DDP's allreduce hooks.
+    if args.distributed:
+        # By default, apex.parallel.DistributedDataParallel overlaps communication with 
+        # computation in the backward pass.
+        # model = DDP(model)
+        # delay_allreduce delays all communication to the end of the backward pass.
+        model = DDP(model, delay_allreduce=True)
+
     # Data loading code
     #normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
     #                                 std=[0.229, 0.224, 0.225])
@@ -323,10 +358,19 @@ def main_worker(gpu, ngpus_per_node, args):
                         ToTensor()
                     ]), draw=False)
 
+
+    val_dataset = KeypointsDataset(json_file = args.val_file, root_dir = args.root_dir,
+                transform=transforms.Compose([
+                    IAA(insize,'val'),
+                    ToTensor()
+                ]), draw=False)
+
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
+        val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset)
     else:
         train_sampler = None
+        val_sampler = None
 
     collate_fn = functools.partial(custom_collate_fn, 
                                 insize=insize,
@@ -339,20 +383,12 @@ def main_worker(gpu, ngpus_per_node, args):
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, collate_fn = collate_fn, pin_memory=True, sampler=train_sampler)
 
-    val_dataset = KeypointsDataset(json_file = args.val_file, root_dir = args.root_dir,
-                transform=transforms.Compose([
-                    IAA(insize,'val'),
-                    ToTensor()
-                ]), draw=False)
-
-
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, collate_fn = collate_fn, pin_memory=True)
 
-    # define loss function (criterion) and optimizer
-    # define custom loss 
+    # define loss function (criterion) - custom loss
     criterion = PPNLoss(
                 insize=insize,
                 outsize=outsize,
@@ -367,12 +403,6 @@ def main_worker(gpu, ngpus_per_node, args):
                 lambda_limb=0.5
             ).cuda()
 
-    optimizer = torch.optim.SGD(model.parameters(), args.lr,
-                                momentum=args.momentum,
-                                weight_decay=args.weight_decay)
-#    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr,
-#                                weight_decay=args.weight_decay)
-
     # optionally resume from a checkpoint
     if args.resume:
         if os.path.isfile(args.resume):
@@ -380,14 +410,25 @@ def main_worker(gpu, ngpus_per_node, args):
             checkpoint = torch.load(args.resume)
             args.start_epoch = checkpoint['epoch']
             best_loss = checkpoint['best_loss']
-            model.load_state_dict(checkpoint['state_dict'])
-            #optimizer.load_state_dict(checkpoint['optimizer'])
+
+            if args.parallel_ckpt:
+                from collections import OrderedDict
+                new_state_dict = OrderedDict()
+                for k, v in checkpoint['state_dict'].items():
+                    name = k[7:] # remove `module.`
+                    new_state_dict[name] = v
+
+                model.load_state_dict(new_state_dict)
+            else:
+                model.load_state_dict(checkpoint['state_dict'])
+
+            optimizer.load_state_dict(checkpoint['optimizer'])
             print("=> loaded checkpoint '{}' (epoch {})"
                   .format(args.resume, checkpoint['epoch']))
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
 
-    cudnn.benchmark = True
+    #cudnn.benchmark = True
 
     if args.evaluate:
 
@@ -416,18 +457,19 @@ def main_worker(gpu, ngpus_per_node, args):
         # train for one epoch
         train_epoch_loss = train(train_loader, model, criterion, optimizer, epoch, args)
 
-        plotter.plot('loss', 'train(epoch)', 'PPN Loss', epoch*len(train_loader), train_epoch_loss) 
 
         # evaluate on validation set
         epoch_loss = validate(val_loader, model, criterion, epoch, args)
-        plotter.plot('loss', 'val', 'PPN Loss', epoch*len(train_loader), epoch_loss) 
 
         # remember best acc@1 and save checkpoint
-        is_best = epoch_loss < best_loss
-        best_loss = min(epoch_loss, best_loss)
+        if args.local_rank == 0:
 
-        if not args.multiprocessing_distributed or (args.multiprocessing_distributed
-                and args.rank % ngpus_per_node == 0):
+            plotter.plot('loss', 'train(epoch)', 'PPN Loss', epoch, train_epoch_loss) 
+            plotter.plot('loss', 'val', 'PPN Loss', epoch, epoch_loss) 
+
+            is_best = epoch_loss < best_loss
+            best_loss = min(epoch_loss, best_loss)
+
             print("checkpoints checking")
             save_checkpoint({
                 'epoch': epoch + 1,
@@ -437,6 +479,72 @@ def main_worker(gpu, ngpus_per_node, args):
                 'optimizer' : optimizer.state_dict(),
             }, is_best, epoch+1, args.save)
 
+class data_prefetcher():
+    def __init__(self, loader):
+        self.loader = iter(loader)
+        self.stream = torch.cuda.Stream()
+        self.mean = torch.tensor([0.485 * 255, 0.456 * 255, 0.406 * 255]).cuda().view(1,3,1,1)
+        self.std = torch.tensor([0.229 * 255, 0.224 * 255, 0.225 * 255]).cuda().view(1,3,1,1)
+        # With Amp, it isn't necessary to manually convert data to half.
+        # if args.fp16:
+        #     self.mean = self.mean.half()
+        #     self.std = self.std.half()
+        self.preload()
+
+    def preload(self):
+        try:
+            self.next_input, self.next_delta, self.next_weight, self.next_weight_ij, self.next_tx_half, self.next_ty_half, self.next_tx, self.next_ty, self.next_tw, self.next_th, self.next_te = next(self.loader)
+        except StopIteration:
+            self.next_input = None
+            self.next_delta = None
+            self.next_weight = None
+            self.next_weight_ij = None
+            self.next_tx_half = None
+            self.next_ty_half = None
+            self.next_tx = None
+            self.next_ty = None
+            self.next_tw = None
+            self.next_th = None
+            self.next_te = None
+            return
+        
+        with torch.cuda.stream(self.stream):
+            self.next_input = self.next_input.cuda(non_blocking=True)
+            self.next_delta = self.next_delta.cuda(non_blocking=True)
+            self.next_weight = self.next_weight.cuda(non_blocking=True)
+            self.next_weight_ij = self.next_weight_ij.cuda(non_blocking=True)
+            self.next_tx_half = self.next_tx_half.cuda(non_blocking=True)
+            self.next_ty_half = self.next_ty_half.cuda(non_blocking=True)
+            self.next_tx = self.next_tx.cuda(non_blocking=True)
+            self.next_ty = self.next_ty.cuda(non_blocking=True)
+            self.next_tw = self.next_tw.cuda(non_blocking=True)
+            self.next_th = self.next_th.cuda(non_blocking=True)
+            self.next_te  = self.next_te.cuda(non_blocking=True)
+
+            # With Amp, it isn't necessary to manually convert data to half.
+            # if args.fp16:
+            #     self.next_input = self.next_input.half()
+            # else:
+            self.next_input = self.next_input.float()
+            self.next_input = self.next_input.sub_(self.mean).div_(self.std)
+            
+    def next(self):
+        torch.cuda.current_stream().wait_stream(self.stream)
+        input = self.next_input
+
+        delta = self.next_delta
+        weight = self.next_weight
+        weight_ij = self.next_weight_ij
+        tx_half = self.next_tx_half
+        ty_half = self.next_ty_half
+        tx = self.next_tx
+        ty = self.next_ty
+        tw = self.next_tw
+        th = self.next_th
+        te = self.next_te 
+
+        self.preload()
+        return input, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
     batch_time = AverageMeter()
@@ -452,59 +560,71 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     model.train()
 
     end = time.time()
-    for i, (img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te) in enumerate(train_loader):
-        # measure data loading time
-        data_time.update(time.time() - end)
+    prefetcher = data_prefetcher(train_loader)
 
-        img = img.cuda()
-        delta = delta.cuda()
-
-        weight = weight.cuda()
-        weight_ij = weight_ij.cuda()
-        tx_half = tx_half.cuda()
-        ty_half = ty_half.cuda()
-
-        tx = tx.cuda()
-        ty = ty.cuda()
-        tw = tw.cuda()
-        th = th.cuda()
-        te = te.cuda()
-
+    img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
+    i = 0
+    while img is not None:
+        i += 1 
         # compute output
         output = model(img)
         loss, loss_resp, loss_iou, loss_coor, loss_size, loss_limb = criterion(
                 img, output, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te)
 
-        # measure accuracy and record loss
-        losses.update(loss.item(), img.size(0))
-        losses_resp.update(loss_resp.item(), img.size(0))
-        losses_iou.update(loss_iou.item(), img.size(0))
-        losses_coor.update(loss_coor.item(), img.size(0))
-        losses_size.update(loss_size.item(), img.size(0))
-        losses_limb.update(loss_limb.item(), img.size(0))
-
         # compute gradient and do SGD step
         optimizer.zero_grad()
-        loss.backward()
+        with amp.scale_loss(loss, optimizer) as scaled_loss:
+            scaled_loss.backward()
         optimizer.step()
-        del loss
-        del output
+        #loss.backward()
 
-        # measure elapsed time
-        batch_time.update(time.time() - end)
-        end = time.time()
+        #del loss
+        #del output
 
         if i % args.print_freq == 0:
-            print('Epoch: [{0}][{1}/{2}] {learning_rate:.7f}\t'
-                  'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                  'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                  'Loss {loss.val:.4f} ({loss.avg:.4f}: {loss_resp.avg:.4f} + '
-                  '{loss_iou.avg:.4f} + {loss_coor.avg:.4f} + '
-                  '{loss_size.avg:.4f} + {loss_limb.avg:.4f})'.format(
-                   epoch, i, len(train_loader), learning_rate=get_lr(optimizer), batch_time=batch_time,
-                   data_time=data_time, loss=losses, loss_resp=losses_resp, loss_iou=losses_iou, loss_coor=losses_coor, loss_size=losses_size, loss_limb=losses_limb))
-            sys.stdout.flush()
-            plotter.plot('loss', 'train', 'PPN Loss', epoch*len(train_loader)+i, losses.avg) 
+
+            #TODO  Measure accuracy parts
+
+            if args.distributed:
+                reduced_loss = reduce_tensor(loss.data)
+                reduced_loss_resp = reduce_tensor(loss_resp.data)
+                reduced_loss_iou = reduce_tensor(loss_iou.data)
+                reduced_loss_coor = reduce_tensor(loss_coor.data)
+                reduced_loss_size = reduce_tensor(loss_size.data)
+                reduced_loss_limb = reduce_tensor(loss_limb.data)
+            else:
+                reduced_loss = loss.data
+                reduced_loss_resp = loss_resp.data
+                reduced_loss_iou = loss_iou.data
+                reduced_loss_coor = loss_coor.data
+                reduced_loss_size = loss_size.data
+                reduced_loss_limb = loss_limb.data
+
+            # measure accuracy and record loss
+            losses.update(to_python_float(reduced_loss), img.size(0))
+            losses_resp.update(to_python_float(reduced_loss_resp), img.size(0))
+            losses_iou.update(to_python_float(reduced_loss_iou), img.size(0))
+            losses_coor.update(to_python_float(reduced_loss_coor), img.size(0))
+            losses_size.update(to_python_float(reduced_loss_size), img.size(0))
+            losses_limb.update(to_python_float(reduced_loss_limb), img.size(0))
+
+            torch.cuda.synchronize()
+
+            # measure elapsed time
+            batch_time.update((time.time() - end)/args.print_freq)
+            end = time.time()
+
+            if args.local_rank == 0:
+                print('Epoch: [{0}][{1}/{2}] {learning_rate:.7f}\t'
+                    'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                    'Loss {loss.val:.4f} ({loss.avg:.4f}: {loss_resp.avg:.4f} + '
+                    '{loss_iou.avg:.4f} + {loss_coor.avg:.4f} + '
+                    '{loss_size.avg:.4f} + {loss_limb.avg:.4f})'.format(
+                    epoch, i, len(train_loader), learning_rate=get_lr(optimizer), batch_time=batch_time,
+                    loss=losses, loss_resp=losses_resp, loss_iou=losses_iou, loss_coor=losses_coor, loss_size=losses_size, loss_limb=losses_limb))
+                sys.stdout.flush()
+                plotter.plot('loss', 'train', 'PPN Loss', 1+(i/(epoch*len(train_loader))), losses.avg) 
+        img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
     return losses.avg
 
 #TODO function for evaluation like OKS
@@ -560,7 +680,7 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
 
             #logger.info("max resp value:"+str(np.amax(resp[0])))
             #logger.info("max conf value:"+str(np.amax(conf[0])))
-            humans = get_humans_by_feature(resp, x, y, w, h, e, detection_thresh=0.0001)
+            humans = get_humans_by_feature(resp, x, y, w, h, e, detection_thresh=0.01)
 
             pil_image = Image.fromarray(np.squeeze(img.cpu().numpy(), axis=0).astype(np.uint8).transpose(1, 2, 0)) 
 
@@ -575,13 +695,12 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
 
             pil_image.save('output/training_test/predict_test_result_'+str(i)+'.png', 'PNG')
 
-            if i>500:
-                break
+#            if i>500:
+#                break
 
 def validate(val_loader, model, criterion, epoch, args):
     batch_time = AverageMeter()
     losses = AverageMeter()
-    data_time = AverageMeter()
 
     losses_resp = AverageMeter()
     losses_iou = AverageMeter()
@@ -589,64 +708,66 @@ def validate(val_loader, model, criterion, epoch, args):
     losses_size = AverageMeter()
     losses_limb = AverageMeter()
 
-    end = time.time()
-
     # switch to evaluate mode
     model.eval()
 
-    with torch.no_grad():
-        end = time.time()
+    end = time.time()
 
-        for i, (target_img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te) in enumerate(val_loader):
-            
-            data_time.update(time.time() - end)
+    prefetcher = data_prefetcher(val_loader)
+    img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
+    i = 0
+    while img is not None:
+        i += 1
 
-            img = target_img.cuda()
-            delta = delta.cuda()
-
-            weight = weight.cuda()
-            weight_ij = weight_ij.cuda()
-            tx_half = tx_half.cuda()
-            ty_half = ty_half.cuda()
-
-            tx = tx.cuda()
-            ty = ty.cuda()
-            tw = tw.cuda()
-            th = th.cuda()
-            te = te.cuda()
-
+        # compute output
+        with torch.no_grad():
             # compute output
             output = model(img)
 
             loss, loss_resp, loss_iou, loss_coor, loss_size, loss_limb = criterion(
                     img, output, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te)
 
-            # measure and record loss
-            losses.update(loss.item(), img.size(0))
-            losses_resp.update(loss_resp.item(), img.size(0))
-            losses_iou.update(loss_iou.item(), img.size(0))
-            losses_coor.update(loss_coor.item(), img.size(0))
-            losses_size.update(loss_size.item(), img.size(0))
-            losses_limb.update(loss_limb.item(), img.size(0))
+        if args.distributed:
+            reduced_loss = reduce_tensor(loss.data)
+            reduced_loss_resp = reduce_tensor(loss_resp.data)
+            reduced_loss_iou = reduce_tensor(loss_iou.data)
+            reduced_loss_coor = reduce_tensor(loss_coor.data)
+            reduced_loss_size = reduce_tensor(loss_size.data)
+            reduced_loss_limb = reduce_tensor(loss_limb.data)
+        else:
+            reduced_loss = loss.data
+            reduced_loss_resp = loss_resp.data
+            reduced_loss_iou = loss_iou.data
+            reduced_loss_coor = loss_coor.data
+            reduced_loss_size = loss_size.data
+            reduced_loss_limb = loss_limb.data
 
-            # measure elapsed time
-            batch_time.update(time.time() - end)
-            end = time.time()
+        # measure and record loss
+        losses.update(to_python_float(reduced_loss), img.size(0))
+        losses_resp.update(to_python_float(reduced_loss_resp), img.size(0))
+        losses_iou.update(to_python_float(reduced_loss_iou), img.size(0))
+        losses_coor.update(to_python_float(reduced_loss_coor), img.size(0))
+        losses_size.update(to_python_float(reduced_loss_size), img.size(0))
+        losses_limb.update(to_python_float(reduced_loss_limb), img.size(0))
 
-            del loss
-            del output
+        # measure elapsed time
+        batch_time.update(time.time() - end)
+        end = time.time()
 
-            if i % args.print_freq == 0:
+        #del loss
+        #del output
 
-                print('Epoch: [{0}][{1}/{2}]\t'
-                      'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                      'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                      'Loss {loss.val:.4f} ({loss.avg:.4f}: {loss_resp.avg:.4f} + '
-                      '{loss_iou.avg:.4f} + {loss_coor.avg:.4f} + '
-                      '{loss_size.avg:.4f} + {loss_limb.avg:.4f})'.format(
-                       epoch, i, len(val_loader),batch_time=batch_time,
-                       data_time=data_time, loss=losses, loss_resp=losses_resp, loss_iou=losses_iou, loss_coor=losses_coor, loss_size=losses_size, loss_limb=losses_limb))
-                sys.stdout.flush()
+        if i % args.print_freq == 0 and  args.local_rank == 0:
+            print('Epoch: [{0}][{1}/{2}]\t'
+                'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                'Loss {loss.val:.4f} ({loss.avg:.4f}: {loss_resp.avg:.4f} + '
+                '{loss_iou.avg:.4f} + {loss_coor.avg:.4f} + '
+                '{loss_size.avg:.4f} + {loss_limb.avg:.4f})'.format(
+                epoch, i, len(val_loader),batch_time=batch_time,
+                loss=losses, loss_resp=losses_resp, loss_iou=losses_iou, loss_coor=losses_coor, loss_size=losses_size, loss_limb=losses_limb))
+            sys.stdout.flush()
+        img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
+
     return losses.avg
 
 
