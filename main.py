@@ -8,7 +8,7 @@ import sys
 import json
 import math
 import cv2
-import functools
+from functools import partial
 
 import logging
 logger = logging.getLogger(__name__)
@@ -27,16 +27,14 @@ from torch.utils.data import Dataset, DataLoader
 
 import torch.utils.data.distributed
 import torchvision.transforms as transforms
-from torchvision import utils
-import torchvision.datasets as datasets
+#from torchvision import utils
+#import torchvision.datasets as datasets
 import torchvision.models as models
 
-#from skimage import io, transform
-#from skimage.color import gray2rgb
 import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
+#import pandas as pd
+#import matplotlib.pyplot as plt
+#import matplotlib.patches as patches
 
 try:
     from apex.parallel import DistributedDataParallel as DDP
@@ -47,17 +45,17 @@ except ImportError:
     raise ImportError("Please install apex from https://www.github.com/nvidia/apex to run this example.")
 
 
-from sys import maxsize
-from numpy import set_printoptions
-
-set_printoptions(threshold=maxsize)
+#from sys import maxsize
+#from numpy import set_printoptions
+#
+#set_printoptions(threshold=maxsize)
 
 from PIL import Image
 
 #import imgaug as ia
 #from imgaug import augmenters as iaa
 
-from torchsummary import summary
+#from torchsummary import summary
 from visdom import Visdom
 
 #Custom models
@@ -165,7 +163,6 @@ class PPNLoss(nn.Module):
                 insize=(384,384),
                 outsize=(24,24),
                 keypoint_names = KEYPOINT_NAMES , local_grid_size= (21,21), edges = EDGES,
-                width_multiplier=1.0,
                 lambda_resp=0.25,
                 lambda_iou=1.0,
                 lambda_coor=5.0,
@@ -233,7 +230,8 @@ class PPNLoss(nn.Module):
         loss_resp = torch.sum((resp - delta)**2, tuple(range(1, resp.dim())) )
         loss_iou = torch.sum(delta * (conf - ious)**2, tuple(range(1, conf.dim())))
         loss_coor = torch.sum(weight * ((x - tx_half)**2 + (y - ty_half)**2), tuple(range(1, x.dim())))
-        loss_size = torch.sum(weight * ((torch.sqrt(torch.abs(w + EPSILON)) - torch.sqrt(torch.abs(tw + EPSILON)))**2 + (torch.sqrt(torch.abs(h + EPSILON)) - torch.sqrt(torch.abs(th + EPSILON)))**2 ), tuple(range(1, w.dim())))
+        #loss_size = torch.sum(weight * ((torch.sqrt(torch.abs(w + EPSILON)) - torch.sqrt(torch.abs(tw + EPSILON)))**2 + (torch.sqrt(torch.abs(h + EPSILON)) - torch.sqrt(torch.abs(th + EPSILON)))**2 ), tuple(range(1, w.dim())))
+        loss_size = torch.sum(weight * ((torch.sqrt(F.relu(w) + EPSILON) - torch.sqrt(tw + EPSILON))**2 + (torch.sqrt(F.relu(h) + EPSILON) - torch.sqrt(th + EPSILON))**2 ), tuple(range(1, w.dim())))
         loss_limb = torch.sum(weight_ij * (e - te)**2, tuple(range(1, e.dim())))
 
         loss_resp = torch.mean(loss_resp)
@@ -241,6 +239,13 @@ class PPNLoss(nn.Module):
         loss_coor = torch.mean(loss_coor)
         loss_size = torch.mean(loss_size)
         loss_limb = torch.mean(loss_limb)
+
+#        loss_resp = torch.sum(loss_resp)
+#        loss_iou = torch.sum(loss_iou)
+#        loss_coor = torch.sum(loss_coor)
+#        loss_size = torch.sum(loss_size)
+#        loss_limb = torch.sum(loss_limb)
+
 
         loss = self.lambda_resp * loss_resp + \
             self.lambda_iou * loss_iou + \
@@ -285,7 +290,7 @@ def main():
                                              init_method='env://')
         args.world_size = torch.distributed.get_world_size()
 
-    print("world_size:", args.world_size)
+    #print("world_size:", args.world_size)
     assert torch.backends.cudnn.enabled, "Amp requires cudnn backend to be enabled."
 
     # create model
@@ -334,7 +339,7 @@ def main():
     # for convenient interoperation with argparse.
     model, optimizer = amp.initialize(model, optimizer,
                                       opt_level=args.opt_level,
-                                      keep_batchnorm_fp32=True,
+                                      keep_batchnorm_fp32= None,
                                       loss_scale=args.loss_scale
                                       )
 
@@ -372,21 +377,24 @@ def main():
         train_sampler = None
         val_sampler = None
 
-    collate_fn = functools.partial(custom_collate_fn, 
-                                insize=insize,
-                                outsize = outsize, 
-                                keypoint_names = KEYPOINT_NAMES ,
-                                local_grid_size = local_grid_size,
-                                edges = EDGES)
+    collate_fn = partial(custom_collate_fn, 
+                            insize = insize,
+                            outsize = outsize, 
+                            keypoint_names = KEYPOINT_NAMES ,
+                            local_grid_size = local_grid_size,
+                            edges = EDGES)
 
     train_loader = DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
-        num_workers=args.workers, collate_fn = collate_fn, pin_memory=True, sampler=train_sampler)
+        num_workers=args.workers, 
+        collate_fn = collate_fn,
+        sampler=train_sampler)
 
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=args.batch_size, shuffle=False,
-        num_workers=args.workers, collate_fn = collate_fn, pin_memory=True)
+        num_workers=args.workers, collate_fn = collate_fn, 
+        sampler=val_sampler)
 
     # define loss function (criterion) - custom loss
     criterion = PPNLoss(
@@ -395,7 +403,6 @@ def main():
                 keypoint_names = KEYPOINT_NAMES,
                 local_grid_size = local_grid_size,
                 edges = EDGES,
-                width_multiplier=1.0,
                 lambda_resp=0.5,
                 lambda_iou=1.0,
                 lambda_coor=5.0,
@@ -464,8 +471,8 @@ def main():
         # remember best acc@1 and save checkpoint
         if args.local_rank == 0:
 
-            plotter.plot('loss', 'train(epoch)', 'PPN Loss', epoch, train_epoch_loss) 
-            plotter.plot('loss', 'val', 'PPN Loss', epoch, epoch_loss) 
+            plotter.plot('loss', 'train(epoch)', 'PPN Loss', epoch+1, train_epoch_loss) 
+            plotter.plot('loss', 'val', 'PPN Loss', epoch+1, epoch_loss) 
 
             is_best = epoch_loss < best_loss
             best_loss = min(epoch_loss, best_loss)
@@ -547,6 +554,8 @@ class data_prefetcher():
         return input, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
+    import pdb; pdb.set_trace()
+
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -620,10 +629,10 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                     'Loss {loss.val:.4f} ({loss.avg:.4f}: {loss_resp.avg:.4f} + '
                     '{loss_iou.avg:.4f} + {loss_coor.avg:.4f} + '
                     '{loss_size.avg:.4f} + {loss_limb.avg:.4f})'.format(
-                    epoch, i, len(train_loader), learning_rate=get_lr(optimizer), batch_time=batch_time,
+                    epoch+1, i, len(train_loader), learning_rate=get_lr(optimizer), batch_time=batch_time,
                     loss=losses, loss_resp=losses_resp, loss_iou=losses_iou, loss_coor=losses_coor, loss_size=losses_size, loss_limb=losses_limb))
                 sys.stdout.flush()
-                plotter.plot('loss', 'train', 'PPN Loss', 1+(i/(epoch*len(train_loader))), losses.avg) 
+                plotter.plot('loss', 'train', 'PPN Loss', epoch+(i/((epoch+1)*len(train_loader))), losses.avg) 
         img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
     return losses.avg
 
@@ -699,6 +708,8 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
 #                break
 
 def validate(val_loader, model, criterion, epoch, args):
+    import pdb; pdb.set_trace()
+
     batch_time = AverageMeter()
     losses = AverageMeter()
 
@@ -758,12 +769,12 @@ def validate(val_loader, model, criterion, epoch, args):
         #del output
 
         if i % args.print_freq == 0 and  args.local_rank == 0:
-            print('Epoch: [{0}][{1}/{2}]\t'
+            print('Val Epoch: [{0}][{1}/{2}]\t'
                 'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                 'Loss {loss.val:.4f} ({loss.avg:.4f}: {loss_resp.avg:.4f} + '
                 '{loss_iou.avg:.4f} + {loss_coor.avg:.4f} + '
                 '{loss_size.avg:.4f} + {loss_limb.avg:.4f})'.format(
-                epoch, i, len(val_loader),batch_time=batch_time,
+                epoch+1, i, len(val_loader),batch_time=batch_time,
                 loss=losses, loss_resp=losses_resp, loss_iou=losses_iou, loss_coor=losses_coor, loss_size=losses_size, loss_limb=losses_limb))
             sys.stdout.flush()
         img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
@@ -828,6 +839,13 @@ def adjust_learning_rate(optimizer, epoch, args):
 
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
+
+def reduce_tensor(tensor):
+    rt = tensor.clone()
+    dist.all_reduce(rt, op=dist.ReduceOp.SUM)
+    #TODO hardcoding world_size
+    rt /= 4  # args.world_size
+    return rt
 
 
 if __name__ == '__main__':

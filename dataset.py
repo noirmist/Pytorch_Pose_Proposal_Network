@@ -5,8 +5,6 @@ from skimage.color import gray2rgb
 import numpy as np
 import pandas as pd
 from PIL import ImageDraw, Image
-#import matplotlib.pyplot as plt
-#import matplotlib.patches as patches
 import torch.utils.data
 from torch.utils.data import Dataset, DataLoader
 from config import *
@@ -150,6 +148,41 @@ class KeypointsDataset(Dataset):
         #plt.close()
         pil_image.save("/media/hci-gpu/hdd/PPN/Aug_image/"+fname) 
 
+class BatchEncoder:
+    def __init__(self, datas,
+                    insize=(384,384),
+                    outsize=(12,12),
+                    keypoint_names = KEYPOINT_NAMES ,
+                    local_grid_size= (9,9),
+                    edges = EDGES
+                    ):
+        self.insize = insize
+        self.outsize = outsize
+        self.keypoint_names = keypoint_names
+        self.local_grid_size = local_grid_size
+        self.edges = edges
+
+        self.image, self.delta, self.weight, self.weight_ij, self.tx_half, self.ty_half, self.tx, self.ty, self.tw, self.th, self.te = self.encode(datas)
+
+    def pin_memory(self):
+        self.image = self.image.pin_memory()
+        self.delta = self.delta.pin_memory()
+        self.weight = self.weight.pin_memory()
+        self.weight_ij = self.weight_ij.pin_memory()
+        self.tx_half = self.tx_half.pin_memory()
+        self.ty_half = self.ty_half.pin_memory()
+        self.tx = self.tx.pin_memory()
+        self.ty = self.ty.pin_memory()
+        self.tw = self.tw.pin_memory()
+        self.th = self.th.pin_memory()
+        self.te = self.te .pin_memory()
+
+        return self
+
+
+  
+    
+        
 def custom_collate_fn(datas,
                     insize=(384,384),
                     outsize=(12,12),
@@ -157,11 +190,10 @@ def custom_collate_fn(datas,
                     local_grid_size= (9,9),
                     edges = EDGES
                     ):
-
     inW, inH = insize
     outW, outH = outsize
-    gridsize = (int(inW / outW), int(inH / outH))
-    gridW, gridH = gridsize
+    gridW = int(inW / outW)
+    gridH = int(inH / outH)
 
     images = []
     deltas = []
@@ -185,16 +217,6 @@ def custom_collate_fn(datas,
         bbox = data['bbox']
         is_visible = data['is_visible']
         size = data['size']
-
-#        print("keypoints:", keypoints.shape)
-#        print("box:", bbox.shape)
-#        print("is_visible:", len(is_visible))
-#        print("size:", size)
-#        print("keypoints:", keypoints)
-#        print("box:", bbox)
-#        print("is_visible:", is_visible)
-#        print("size:", size)
-#        sys.stdout.flush()
 
         K = len(keypoint_names)
 
@@ -328,4 +350,4 @@ def custom_collate_fn(datas,
 #    print("te", te.shape)
 
     return image, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te
-
+ 
