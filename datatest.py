@@ -81,7 +81,7 @@ def restore_size(w, h):
  
 
 # Parse result
-def get_humans_by_feature(delta, x, y, w, h, e, detection_thresh=0.01, min_num_keypoints=1):
+def get_humans_by_feature(delta, x, y, w, h, e, detection_thresh=0.015, min_num_keypoints=1):
     start = time.time()
 
     #delta = resp * conf

@@ -64,6 +64,8 @@ from config import *
 from dataset import *
 from aug import *
 
+import pdb
+
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(models.__dict__[name]))
@@ -230,8 +232,8 @@ class PPNLoss(nn.Module):
         loss_resp = torch.sum((resp - delta)**2, tuple(range(1, resp.dim())) )
         loss_iou = torch.sum(delta * (conf - ious)**2, tuple(range(1, conf.dim())))
         loss_coor = torch.sum(weight * ((x - tx_half)**2 + (y - ty_half)**2), tuple(range(1, x.dim())))
-        #loss_size = torch.sum(weight * ((torch.sqrt(torch.abs(w + EPSILON)) - torch.sqrt(torch.abs(tw + EPSILON)))**2 + (torch.sqrt(torch.abs(h + EPSILON)) - torch.sqrt(torch.abs(th + EPSILON)))**2 ), tuple(range(1, w.dim())))
-        loss_size = torch.sum(weight * ((torch.sqrt(F.relu(w) + EPSILON) - torch.sqrt(tw + EPSILON))**2 + (torch.sqrt(F.relu(h) + EPSILON) - torch.sqrt(th + EPSILON))**2 ), tuple(range(1, w.dim())))
+        loss_size = torch.sum(weight * ((torch.sqrt(torch.abs(w + EPSILON)) - torch.sqrt(torch.abs(tw + EPSILON)))**2 + (torch.sqrt(torch.abs(h + EPSILON)) - torch.sqrt(torch.abs(th + EPSILON)))**2 ), tuple(range(1, w.dim())))
+        #loss_size = torch.sum(weight * ((torch.sqrt(F.relu(w) + EPSILON) - torch.sqrt(tw + EPSILON))**2 + (torch.sqrt(F.relu(h) + EPSILON) - torch.sqrt(th + EPSILON))**2 ), tuple(range(1, w.dim())))
         loss_limb = torch.sum(weight_ij * (e - te)**2, tuple(range(1, e.dim())))
 
         loss_resp = torch.mean(loss_resp)
@@ -240,18 +242,12 @@ class PPNLoss(nn.Module):
         loss_size = torch.mean(loss_size)
         loss_limb = torch.mean(loss_limb)
 
-#        loss_resp = torch.sum(loss_resp)
-#        loss_iou = torch.sum(loss_iou)
-#        loss_coor = torch.sum(loss_coor)
-#        loss_size = torch.sum(loss_size)
-#        loss_limb = torch.sum(loss_limb)
-
-
         loss = self.lambda_resp * loss_resp + \
             self.lambda_iou * loss_iou + \
             self.lambda_coor * loss_coor + \
             self.lambda_size * loss_size + \
             self.lambda_limb * loss_limb
+
         return loss, loss_resp, loss_iou, loss_coor, loss_size, loss_limb
 
 
@@ -385,15 +381,17 @@ def main():
                             edges = EDGES)
 
     train_loader = DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
+        train_dataset, batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, 
         collate_fn = collate_fn,
+        pin_memory = True,
         sampler=train_sampler)
 
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, collate_fn = collate_fn, 
+        pin_memory = True,
         sampler=val_sampler)
 
     # define loss function (criterion) - custom loss
@@ -468,6 +466,7 @@ def main():
         # evaluate on validation set
         epoch_loss = validate(val_loader, model, criterion, epoch, args)
 
+
         # remember best acc@1 and save checkpoint
         if args.local_rank == 0:
 
@@ -486,12 +485,15 @@ def main():
                 'optimizer' : optimizer.state_dict(),
             }, is_best, epoch+1, args.save)
 
-class data_prefetcher():
+class test_data_prefetcher():
     def __init__(self, loader):
         self.loader = iter(loader)
         self.stream = torch.cuda.Stream()
-        self.mean = torch.tensor([0.485 * 255, 0.456 * 255, 0.406 * 255]).cuda().view(1,3,1,1)
-        self.std = torch.tensor([0.229 * 255, 0.224 * 255, 0.225 * 255]).cuda().view(1,3,1,1)
+        #self.mean = torch.tensor([0.485 * 255, 0.456 * 255, 0.406 * 255]).cuda().view(1,3,1,1)
+        #self.std = torch.tensor([0.229 * 255, 0.224 * 255, 0.225 * 255]).cuda().view(1,3,1,1)
+        #self.mean = torch.tensor([0.485 , 0.456 , 0.406 ]).cuda().view(1,3,1,1)
+        #self.std = torch.tensor([0.229 , 0.224 , 0.225 ]).cuda().view(1,3,1,1)
+        # With Amp, it isn't necessary to manually convert data to half.
         # With Amp, it isn't necessary to manually convert data to half.
         # if args.fp16:
         #     self.mean = self.mean.half()
@@ -514,7 +516,82 @@ class data_prefetcher():
             self.next_th = None
             self.next_te = None
             return
-        
+        import copy 
+        self.raw_img = copy.deepcopy(self.next_input)
+
+        with torch.cuda.stream(self.stream):
+            self.next_input = self.next_input.cuda(non_blocking=True)
+            self.next_delta = self.next_delta.cuda(non_blocking=True)
+            self.next_weight = self.next_weight.cuda(non_blocking=True)
+            self.next_weight_ij = self.next_weight_ij.cuda(non_blocking=True)
+            self.next_tx_half = self.next_tx_half.cuda(non_blocking=True)
+            self.next_ty_half = self.next_ty_half.cuda(non_blocking=True)
+            self.next_tx = self.next_tx.cuda(non_blocking=True)
+            self.next_ty = self.next_ty.cuda(non_blocking=True)
+            self.next_tw = self.next_tw.cuda(non_blocking=True)
+            self.next_th = self.next_th.cuda(non_blocking=True)
+            self.next_te  = self.next_te.cuda(non_blocking=True)
+
+            # With Amp, it isn't necessary to manually convert data to half.
+            # if args.fp16:
+            #     self.next_input = self.next_input.half()
+            # else:
+            self.next_input = self.next_input.float()
+            #self.next_input = self.next_input.sub_(self.mean).div_(self.std)
+            
+    def next(self):
+        torch.cuda.current_stream().wait_stream(self.stream)
+        input = self.next_input
+
+        delta = self.next_delta
+        weight = self.next_weight
+        weight_ij = self.next_weight_ij
+        tx_half = self.next_tx_half
+        ty_half = self.next_ty_half
+        tx = self.next_tx
+        ty = self.next_ty
+        tw = self.next_tw
+        th = self.next_th
+        te = self.next_te 
+
+        raw = self.raw_img
+
+        self.preload()
+        return input, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te, raw
+
+
+
+class data_prefetcher():
+    def __init__(self, loader):
+        self.loader = iter(loader)
+        self.stream = torch.cuda.Stream()
+        #self.mean = torch.tensor([0.485 * 255, 0.456 * 255, 0.406 * 255]).cuda().view(1,3,1,1)
+        #self.std = torch.tensor([0.229 * 255, 0.224 * 255, 0.225 * 255]).cuda().view(1,3,1,1)
+        self.mean = torch.tensor([0.485 , 0.456 , 0.406 ]).cuda().view(1,3,1,1)
+        self.std = torch.tensor([0.229 , 0.224 , 0.225 ]).cuda().view(1,3,1,1)
+        # With Amp, it isn't necessary to manually convert data to half.
+        # if args.fp16:
+        #     self.mean = self.mean.half()
+        #     self.std = self.std.half()
+        self.preload()
+
+    def preload(self):
+        try:
+            self.next_input, self.next_delta, self.next_weight, self.next_weight_ij, self.next_tx_half, self.next_ty_half, self.next_tx, self.next_ty, self.next_tw, self.next_th, self.next_te = next(self.loader)
+        except StopIteration:
+            self.next_input = None
+            self.next_delta = None
+            self.next_weight = None
+            self.next_weight_ij = None
+            self.next_tx_half = None
+            self.next_ty_half = None
+            self.next_tx = None
+            self.next_ty = None
+            self.next_tw = None
+            self.next_th = None
+            self.next_te = None
+            return
+
         with torch.cuda.stream(self.stream):
             self.next_input = self.next_input.cuda(non_blocking=True)
             self.next_delta = self.next_delta.cuda(non_blocking=True)
@@ -554,8 +631,6 @@ class data_prefetcher():
         return input, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
-    import pdb; pdb.set_trace()
-
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -634,6 +709,10 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                 sys.stdout.flush()
                 plotter.plot('loss', 'train', 'PPN Loss', epoch+(i/((epoch+1)*len(train_loader))), losses.avg) 
         img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
+
+#        if i>2:
+#            bbb = 0
+#            abc = 10/bbb
     return losses.avg
 
 #TODO function for evaluation like OKS
@@ -649,15 +728,13 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
     model.eval()
     outW, outH = outsize
 
-    with torch.no_grad():
-        end = time.time()
-
-        for i, (target_img, _, _, _, _, _, _, _, _, _, _) in enumerate(val_loader):
-            
-            data_time.update(time.time() - end)
-
-            img = target_img.cuda()
-
+    prefetcher = test_data_prefetcher(val_loader)
+    img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te , raw_img= prefetcher.next()
+    i = 0
+    while img is not None:
+        i += 1
+        # compute output
+        with torch.no_grad():
             # compute output
             output = model(img)
 
@@ -689,9 +766,9 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
 
             #logger.info("max resp value:"+str(np.amax(resp[0])))
             #logger.info("max conf value:"+str(np.amax(conf[0])))
-            humans = get_humans_by_feature(resp, x, y, w, h, e, detection_thresh=0.01)
+            humans = get_humans_by_feature(resp, x, y, w, h, e, detection_thresh=0.0001)
 
-            pil_image = Image.fromarray(np.squeeze(img.cpu().numpy(), axis=0).astype(np.uint8).transpose(1, 2, 0)) 
+            pil_image = Image.fromarray(np.squeeze(raw_img.cpu().numpy(), axis=0).astype(np.uint8).transpose(1, 2, 0)) 
 
             pil_image = draw_humans(
                 keypoint_names=KEYPOINT_NAMES,
@@ -707,9 +784,9 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
 #            if i>500:
 #                break
 
-def validate(val_loader, model, criterion, epoch, args):
-    import pdb; pdb.set_trace()
+        img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te, raw_img = prefetcher.next()
 
+def validate(val_loader, model, criterion, epoch, args):
     batch_time = AverageMeter()
     losses = AverageMeter()
 
@@ -834,8 +911,8 @@ def adjust_learning_rate(optimizer, epoch, args):
     #lr = 0.007 * (1  - iters/260000)
     lr = get_lr(optimizer)
 
-    if epoch % 100 == 0 and epoch > 0 :
-        lr = 0.8* lr
+    if epoch % 800 == 0 and epoch > 1 :
+        lr = 0.5* lr
 
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
