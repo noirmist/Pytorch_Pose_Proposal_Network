@@ -146,43 +146,39 @@ class KeypointsDataset(Dataset):
         #plt.pause(0.0001)  # pause a bit so that plots are updated
         #plt.savefig("/media/hci-gpu/hdd/PPN/Aug_image/image_"+str(idx)+".png") 
         #plt.close()
-        pil_image.save("/media/hci-gpu/hdd/PPN/Aug_image/"+fname) 
+        pil_image.save("/media/hci-gpu/hdd/PPN/input_check_0527/"+fname) 
 
-class BatchEncoder:
-    def __init__(self, datas,
-                    insize=(384,384),
-                    outsize=(12,12),
-                    keypoint_names = KEYPOINT_NAMES ,
-                    local_grid_size= (9,9),
-                    edges = EDGES
-                    ):
-        self.insize = insize
-        self.outsize = outsize
-        self.keypoint_names = keypoint_names
-        self.local_grid_size = local_grid_size
-        self.edges = edges
+#class BatchEncoder:
+#    def __init__(self, datas,
+#                    insize=(384,384),
+#                    outsize=(12,12),
+#                    keypoint_names = KEYPOINT_NAMES ,
+#                    local_grid_size= (9,9),
+#                    edges = EDGES
+#                    ):
+#        self.insize = insize
+#        self.outsize = outsize
+#        self.keypoint_names = keypoint_names
+#        self.local_grid_size = local_grid_size
+#        self.edges = edges
+#
+#        self.image, self.delta, self.weight, self.weight_ij, self.tx_half, self.ty_half, self.tx, self.ty, self.tw, self.th, self.te = self.encode(datas)
+#
+#    def pin_memory(self):
+#        self.image = self.image.pin_memory()
+#        self.delta = self.delta.pin_memory()
+#        self.weight = self.weight.pin_memory()
+#        self.weight_ij = self.weight_ij.pin_memory()
+#        self.tx_half = self.tx_half.pin_memory()
+#        self.ty_half = self.ty_half.pin_memory()
+#        self.tx = self.tx.pin_memory()
+#        self.ty = self.ty.pin_memory()
+#        self.tw = self.tw.pin_memory()
+#        self.th = self.th.pin_memory()
+#        self.te = self.te .pin_memory()
+#
+#        return self
 
-        self.image, self.delta, self.weight, self.weight_ij, self.tx_half, self.ty_half, self.tx, self.ty, self.tw, self.th, self.te = self.encode(datas)
-
-    def pin_memory(self):
-        self.image = self.image.pin_memory()
-        self.delta = self.delta.pin_memory()
-        self.weight = self.weight.pin_memory()
-        self.weight_ij = self.weight_ij.pin_memory()
-        self.tx_half = self.tx_half.pin_memory()
-        self.ty_half = self.ty_half.pin_memory()
-        self.tx = self.tx.pin_memory()
-        self.ty = self.ty.pin_memory()
-        self.tw = self.tw.pin_memory()
-        self.th = self.th.pin_memory()
-        self.te = self.te .pin_memory()
-
-        return self
-
-
-  
-    
-        
 def custom_collate_fn(datas,
                     insize=(384,384),
                     outsize=(12,12),

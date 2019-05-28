@@ -205,6 +205,8 @@ class PPNLoss(nn.Module):
 
     # forward input
     #loss = criterion(output, delta, max_delta_ij, tx, ty, tw, th, te)
+    #loss, loss_resp, loss_iou, loss_coor, loss_size, loss_limb = criterion(
+    #        img, output, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te)
     def forward(self, image, feature_map, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te):
         ## TODO
         K = len(self.keypoint_names)
@@ -229,11 +231,17 @@ class PPNLoss(nn.Module):
         (rtx, rty), (rtw, rth) = self.restore_xy(tx, ty), self.restore_size(tw, th)
         ious = iou((rx, ry, rw, rh), (rtx, rty, rtw, rth))
 
+        #resp = F.threshold(resp,0, 0)
+#        loss_resp = torch.sum(torch.abs(resp - delta), tuple(range(1, resp.dim())) )
+#        loss_iou = torch.sum(delta * torch.abs(conf - ious), tuple(range(1, conf.dim())))
+#        loss_coor = torch.sum(weight * ((x - tx_half)**2 + (y - ty_half)**2), tuple(range(1, x.dim())))
+#        loss_size = torch.sum(weight * ((torch.sqrt(torch.abs(w + EPSILON)) - torch.sqrt(torch.abs(tw + EPSILON)))**2 + (torch.sqrt(torch.abs(h + EPSILON)) - torch.sqrt(torch.abs(th + EPSILON)))**2 ), tuple(range(1, w.dim())))
+#        loss_limb = torch.sum(weight_ij * (e - te)**2, tuple(range(1, e.dim())))
+
         loss_resp = torch.sum((resp - delta)**2, tuple(range(1, resp.dim())) )
         loss_iou = torch.sum(delta * (conf - ious)**2, tuple(range(1, conf.dim())))
         loss_coor = torch.sum(weight * ((x - tx_half)**2 + (y - ty_half)**2), tuple(range(1, x.dim())))
         loss_size = torch.sum(weight * ((torch.sqrt(torch.abs(w + EPSILON)) - torch.sqrt(torch.abs(tw + EPSILON)))**2 + (torch.sqrt(torch.abs(h + EPSILON)) - torch.sqrt(torch.abs(th + EPSILON)))**2 ), tuple(range(1, w.dim())))
-        #loss_size = torch.sum(weight * ((torch.sqrt(F.relu(w) + EPSILON) - torch.sqrt(tw + EPSILON))**2 + (torch.sqrt(F.relu(h) + EPSILON) - torch.sqrt(th + EPSILON))**2 ), tuple(range(1, w.dim())))
         loss_limb = torch.sum(weight_ij * (e - te)**2, tuple(range(1, e.dim())))
 
         loss_resp = torch.mean(loss_resp)
@@ -293,6 +301,17 @@ def main():
     if args.pretrained:
         print("=> using pre-trained model '{}'".format(args.arch))
         model = models.__dict__[args.arch](pretrained=True)
+        
+#        #Fix weight from 0 to 3 layers
+#        child_counter = 0
+#        for child in model.children():
+#            if child_counter < 4:
+#                print("child ",child_counter," was frozen")
+#                for param in child.parameters():
+#                    param.requires_grad = False
+#            else:
+#                break
+#            child_counter += 1
     else:
         print("=> creating model '{}'".format(args.arch))
         model = models.__dict__[args.arch]()
@@ -326,14 +345,15 @@ def main():
     insize = (args.image_size, args.image_size)
 
     # Scale learning rate based on global batch size
-    args.lr = args.lr*float(args.batch_size*args.world_size)/256. 
+    #args.lr = args.lr*float(args.batch_size*args.world_size)/256. 
     optimizer = torch.optim.SGD(model.parameters(), args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
 
     # Initialize Amp.  Amp accepts either values or strings for the optional override arguments,
     # for convenient interoperation with argparse.
-    model, optimizer = amp.initialize(model, optimizer,
+    if args.distributed:
+        model, optimizer = amp.initialize(model, optimizer,
                                       opt_level=args.opt_level,
                                       keep_batchnorm_fp32= None,
                                       loss_scale=args.loss_scale
@@ -384,14 +404,12 @@ def main():
         train_dataset, batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, 
         collate_fn = collate_fn,
-        pin_memory = True,
         sampler=train_sampler)
 
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, collate_fn = collate_fn, 
-        pin_memory = True,
         sampler=val_sampler)
 
     # define loss function (criterion) - custom loss
@@ -401,7 +419,7 @@ def main():
                 keypoint_names = KEYPOINT_NAMES,
                 local_grid_size = local_grid_size,
                 edges = EDGES,
-                lambda_resp=0.5,
+                lambda_resp=0.25,
                 lambda_iou=1.0,
                 lambda_coor=5.0,
                 lambda_size=5.0,
@@ -436,7 +454,6 @@ def main():
     #cudnn.benchmark = True
 
     if args.evaluate:
-
         val_dataset = KeypointsDataset(json_file = args.val_file, root_dir = args.root_dir,
                     transform=transforms.Compose([
                         IAA(insize,'test'),
@@ -446,7 +463,7 @@ def main():
         val_loader = torch.utils.data.DataLoader(
             val_dataset,
             batch_size=args.batch_size, shuffle=False,
-            num_workers=args.workers, collate_fn = collate_fn, pin_memory=True)
+            num_workers=args.workers, collate_fn = collate_fn, sampler = None)
 
 
         test_output(val_loader, model, criterion, 1, outsize, local_grid_size, args)
@@ -644,12 +661,29 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     model.train()
 
     end = time.time()
-    prefetcher = data_prefetcher(train_loader)
+#    prefetcher = data_prefetcher(train_loader)
+#
+#    img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
+#    i = 0
+#    while img is not None:
+#        i += 1 
 
-    img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
-    i = 0
-    while img is not None:
-        i += 1 
+    for i, (img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te) in enumerate(train_loader):
+        # measure data loading time
+        img = img.cuda()
+        delta = delta.cuda()
+
+        weight = weight.cuda()
+        weight_ij = weight_ij.cuda()
+        tx_half = tx_half.cuda()
+        ty_half = ty_half.cuda()
+
+        tx = tx.cuda()
+        ty = ty.cuda()
+        tw = tw.cuda()
+        th = th.cuda()
+        te = te.cuda()
+
         # compute output
         output = model(img)
         loss, loss_resp, loss_iou, loss_coor, loss_size, loss_limb = criterion(
@@ -660,15 +694,10 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         with amp.scale_loss(loss, optimizer) as scaled_loss:
             scaled_loss.backward()
         optimizer.step()
-        #loss.backward()
-
-        #del loss
-        #del output
 
         if i % args.print_freq == 0:
 
             #TODO  Measure accuracy parts
-
             if args.distributed:
                 reduced_loss = reduce_tensor(loss.data)
                 reduced_loss_resp = reduce_tensor(loss_resp.data)
@@ -676,6 +705,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                 reduced_loss_coor = reduce_tensor(loss_coor.data)
                 reduced_loss_size = reduce_tensor(loss_size.data)
                 reduced_loss_limb = reduce_tensor(loss_limb.data)
+                #reduced_resp_data = reduce_tensor(output.data)
             else:
                 reduced_loss = loss.data
                 reduced_loss_resp = loss_resp.data
@@ -694,11 +724,15 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
 
             torch.cuda.synchronize()
 
+            #K = len(KEYPOINT_NAMES)
+            #resp = reduced_resp_data[:, 0 * K:1 * K, :, :].cpu().numpy() # delta
+
             # measure elapsed time
             batch_time.update((time.time() - end)/args.print_freq)
             end = time.time()
 
             if args.local_rank == 0:
+                #print("max resp value:"+str(np.amax(resp)))
                 print('Epoch: [{0}][{1}/{2}] {learning_rate:.7f}\t'
                     'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                     'Loss {loss.val:.4f} ({loss.avg:.4f}: {loss_resp.avg:.4f} + '
@@ -708,7 +742,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                     loss=losses, loss_resp=losses_resp, loss_iou=losses_iou, loss_coor=losses_coor, loss_size=losses_size, loss_limb=losses_limb))
                 sys.stdout.flush()
                 plotter.plot('loss', 'train', 'PPN Loss', epoch+(i/((epoch+1)*len(train_loader))), losses.avg) 
-        img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
+        #img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
 
 #        if i>2:
 #            bbb = 0
@@ -728,15 +762,48 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
     model.eval()
     outW, outH = outsize
 
-    prefetcher = test_data_prefetcher(val_loader)
-    img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te , raw_img= prefetcher.next()
-    i = 0
-    while img is not None:
-        i += 1
-        # compute output
-        with torch.no_grad():
+#    prefetcher = test_data_prefetcher(val_loader)
+#    img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te , raw_img= prefetcher.next()
+#    i = 0
+#    while img is not None:
+#        i += 1
+#        # compute output
+#        with torch.no_grad():
+    with torch.no_grad():
+        end=time.time()
+        
+        for i, (target_img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te) in enumerate(val_loader):
+        #for i, (target_img, _, _, _, _, _, _, _, _, _, _) in enumerate(val_loader):
+            
+            img = target_img.cuda()
+
             # compute output
             output = model(img)
+
+            delta = delta.cuda()
+            weight = weight.cuda()
+            weight_ij = weight_ij.cuda()
+            tx_half = tx_half.cuda()
+            ty_half = ty_half.cuda()
+
+            tx = tx.cuda()
+            ty = ty.cuda()
+            tw = tw.cuda()
+            th = th.cuda()
+            te = te.cuda()
+
+            loss, loss_resp, loss_iou, loss_coor, loss_size, loss_limb = criterion(
+                    img, output, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te)
+
+            reduced_loss = loss.data
+            reduced_loss_resp = loss_resp.data
+            reduced_loss_iou = loss_iou.data
+            reduced_loss_coor = loss_coor.data
+            reduced_loss_size = loss_size.data
+            reduced_loss_limb = loss_limb.data
+
+            logger.info("resp loss:"+str(reduced_loss_resp))
+
 
             K = len(KEYPOINT_NAMES)
             B, _, _, _ = img.shape
@@ -755,20 +822,43 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
                 outH, outW
             ).cpu().numpy()
 
+            print(delta.cpu().numpy()[0][0].shape)
+            logger.info("Non-Zero GT: "+str(np.count_nonzero(delta.cpu().numpy()[0])))
+            #logger.info("Non-Zero GT1: "+str(np.count_nonzero(delta.cpu().numpy()[0][1])))
+            logger.info("resp dim:"+str(resp.shape))
+            #logger.info("resp value:"+str(resp[0]))
 
             resp = np.squeeze(resp, axis=0)
+            conf = np.squeeze(conf, axis=0)
             x = np.squeeze(x, axis=0)
             y = np.squeeze(y, axis=0)
             w = np.squeeze(w, axis=0)
             h = np.squeeze(h, axis=0)
             e = np.squeeze(e, axis=0)
 
+            logger.info("max human resp value:"+str(np.amax(resp[0])))
+            logger.info("max 1 resp value:"+str(np.amax(resp[1])))
+            logger.info("max 2 resp value:"+str(np.amax(resp[2])))
+            logger.info("max 3 resp value:"+str(np.amax(resp[3])))
+            logger.info("max 4 resp value:"+str(np.amax(resp[4])))
+            logger.info("max 5 resp value:"+str(np.amax(resp[5])))
+            logger.info("max 6 resp value:"+str(np.amax(resp[6])))
+            logger.info("max 7 resp value:"+str(np.amax(resp[7])))
+            logger.info("max 8 resp value:"+str(np.amax(resp[8])))
+            logger.info("max 9 resp value:"+str(np.amax(resp[9])))
+            logger.info("max 10 resp value:"+str(np.amax(resp[10])))
+            logger.info("max 11 resp value:"+str(np.amax(resp[11])))
+            logger.info("max 12 resp value:"+str(np.amax(resp[12])))
+            logger.info("max 13 resp value:"+str(np.amax(resp[13])))
+            logger.info("max 14 resp value:"+str(np.amax(resp[14])))
+            logger.info("max 15 resp value:"+str(np.amax(resp[15])))
+            logger.info("max 16 resp value:"+str(np.amax(resp[16])))
+            logger.info("max conf value:"+str(np.amax(conf[0])))
+            #delta = resp*conf
+            #logger.info("max delta value:"+str(np.amax(delta[0])))
+            humans = get_humans_by_feature(resp, x, y, w, h, e, detection_thresh=0.1)
 
-            #logger.info("max resp value:"+str(np.amax(resp[0])))
-            #logger.info("max conf value:"+str(np.amax(conf[0])))
-            humans = get_humans_by_feature(resp, x, y, w, h, e, detection_thresh=0.0001)
-
-            pil_image = Image.fromarray(np.squeeze(raw_img.cpu().numpy(), axis=0).astype(np.uint8).transpose(1, 2, 0)) 
+            pil_image = Image.fromarray(np.squeeze(img.cpu().numpy(), axis=0).astype(np.uint8).transpose(1, 2, 0)) 
 
             pil_image = draw_humans(
                 keypoint_names=KEYPOINT_NAMES,
@@ -781,10 +871,9 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
 
             pil_image.save('output/training_test/predict_test_result_'+str(i)+'.png', 'PNG')
 
-#            if i>500:
-#                break
+            if i>500:
+                break
 
-        img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te, raw_img = prefetcher.next()
 
 def validate(val_loader, model, criterion, epoch, args):
     batch_time = AverageMeter()
@@ -800,61 +889,100 @@ def validate(val_loader, model, criterion, epoch, args):
     model.eval()
 
     end = time.time()
+#
+#    prefetcher = data_prefetcher(val_loader)
+#    img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
+#    i = 0
+#    while img is not None:
+#        i += 1
+#
 
-    prefetcher = data_prefetcher(val_loader)
-    img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
-    i = 0
-    while img is not None:
-        i += 1
+#        # compute output
+#        with torch.no_grad():
+#            # compute output
 
-        # compute output
-        with torch.no_grad():
-            # compute output
+    with torch.no_grad():
+        for i, (target_img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te) in enumerate(val_loader):
+            
+            img = target_img.cuda()
+
+            delta = delta.cuda()
+
+            weight = weight.cuda()
+            weight_ij = weight_ij.cuda()
+            tx_half = tx_half.cuda()
+            ty_half = ty_half.cuda()
+
+            tx = tx.cuda()
+            ty = ty.cuda()
+            tw = tw.cuda()
+            th = th.cuda()
+            te = te.cuda()
+
             output = model(img)
 
             loss, loss_resp, loss_iou, loss_coor, loss_size, loss_limb = criterion(
                     img, output, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te)
 
-        if args.distributed:
-            reduced_loss = reduce_tensor(loss.data)
-            reduced_loss_resp = reduce_tensor(loss_resp.data)
-            reduced_loss_iou = reduce_tensor(loss_iou.data)
-            reduced_loss_coor = reduce_tensor(loss_coor.data)
-            reduced_loss_size = reduce_tensor(loss_size.data)
-            reduced_loss_limb = reduce_tensor(loss_limb.data)
-        else:
-            reduced_loss = loss.data
-            reduced_loss_resp = loss_resp.data
-            reduced_loss_iou = loss_iou.data
-            reduced_loss_coor = loss_coor.data
-            reduced_loss_size = loss_size.data
-            reduced_loss_limb = loss_limb.data
+            if args.distributed:
+                reduced_loss = reduce_tensor(loss.data)
+                reduced_loss_resp = reduce_tensor(loss_resp.data)
+                reduced_loss_iou = reduce_tensor(loss_iou.data)
+                reduced_loss_coor = reduce_tensor(loss_coor.data)
+                reduced_loss_size = reduce_tensor(loss_size.data)
+                reduced_loss_limb = reduce_tensor(loss_limb.data)
+                reduced_resp_data = reduce_tensor(output.data)
+            else:
+                reduced_loss = loss.data
+                reduced_loss_resp = loss_resp.data
+                reduced_loss_iou = loss_iou.data
+                reduced_loss_coor = loss_coor.data
+                reduced_loss_size = loss_size.data
+                reduced_loss_limb = loss_limb.data
 
-        # measure and record loss
-        losses.update(to_python_float(reduced_loss), img.size(0))
-        losses_resp.update(to_python_float(reduced_loss_resp), img.size(0))
-        losses_iou.update(to_python_float(reduced_loss_iou), img.size(0))
-        losses_coor.update(to_python_float(reduced_loss_coor), img.size(0))
-        losses_size.update(to_python_float(reduced_loss_size), img.size(0))
-        losses_limb.update(to_python_float(reduced_loss_limb), img.size(0))
+            # measure and record loss
+            losses.update(to_python_float(reduced_loss), img.size(0))
+            losses_resp.update(to_python_float(reduced_loss_resp), img.size(0))
+            losses_iou.update(to_python_float(reduced_loss_iou), img.size(0))
+            losses_coor.update(to_python_float(reduced_loss_coor), img.size(0))
+            losses_size.update(to_python_float(reduced_loss_size), img.size(0))
+            losses_limb.update(to_python_float(reduced_loss_limb), img.size(0))
 
-        # measure elapsed time
-        batch_time.update(time.time() - end)
-        end = time.time()
+            # measure elapsed time
+            batch_time.update(time.time() - end)
+            end = time.time()
 
-        #del loss
-        #del output
+            K = len(KEYPOINT_NAMES)
+            resp = reduced_resp_data[:, 0 * K:1 * K, :, :].cpu().numpy() # delta
 
-        if i % args.print_freq == 0 and  args.local_rank == 0:
-            print('Val Epoch: [{0}][{1}/{2}]\t'
-                'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                'Loss {loss.val:.4f} ({loss.avg:.4f}: {loss_resp.avg:.4f} + '
-                '{loss_iou.avg:.4f} + {loss_coor.avg:.4f} + '
-                '{loss_size.avg:.4f} + {loss_limb.avg:.4f})'.format(
-                epoch+1, i, len(val_loader),batch_time=batch_time,
-                loss=losses, loss_resp=losses_resp, loss_iou=losses_iou, loss_coor=losses_coor, loss_size=losses_size, loss_limb=losses_limb))
-            sys.stdout.flush()
-        img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
+            if i % args.print_freq == 0 and  args.local_rank == 0:
+                print("Val max resp 0 value:"+str(resp[:,0,:,:].reshape(-1)[np.argsort(resp[:,0,:,:].reshape(-1))[-5:]]))
+                print("Val max resp 1 value:"+str(resp[:,1,:,:].reshape(-1)[np.argsort(resp[:,1,:,:].reshape(-1))[-5:]]))
+                print("Val max resp 2 value:"+str(resp[:,2,:,:].reshape(-1)[np.argsort(resp[:,2,:,:].reshape(-1))[-5:]]))
+                print("Val max resp 3 value:"+str(resp[:,3,:,:].reshape(-1)[np.argsort(resp[:,3,:,:].reshape(-1))[-5:]]))
+                print("Val max resp 4 value:"+str(resp[:,4,:,:].reshape(-1)[np.argsort(resp[:,4,:,:].reshape(-1))[-5:]]))
+                print("Val max resp 5 value:"+str(resp[:,5,:,:].reshape(-1)[np.argsort(resp[:,5,:,:].reshape(-1))[-5:]]))
+                print("Val max resp 6 value:"+str(resp[:,6,:,:].reshape(-1)[np.argsort(resp[:,6,:,:].reshape(-1))[-5:]]))
+                print("Val max resp 7 value:"+str(resp[:,7,:,:].reshape(-1)[np.argsort(resp[:,7,:,:].reshape(-1))[-5:]]))
+                print("Val max resp 8 value:"+str(resp[:,8,:,:].reshape(-1)[np.argsort(resp[:,8,:,:].reshape(-1))[-5:]]))
+                print("Val max resp 9 value:"+str(resp[:,9,:,:].reshape(-1)[np.argsort(resp[:,9,:,:].reshape(-1))[-5:]]))
+                print("Val max resp 10 value:"+str(resp[:,10,:,:].reshape(-1)[np.argsort(resp[:,10,:,:].reshape(-1))[-5:]]))
+                print("Val max resp 11 value:"+str(resp[:,11,:,:].reshape(-1)[np.argsort(resp[:,11,:,:].reshape(-1))[-5:]]))
+                print("Val max resp 12 value:"+str(resp[:,12,:,:].reshape(-1)[np.argsort(resp[:,12,:,:].reshape(-1))[-5:]]))
+                print("Val max resp 13 value:"+str(resp[:,13,:,:].reshape(-1)[np.argsort(resp[:,13,:,:].reshape(-1))[-5:]]))
+                print("Val max resp 14 value:"+str(resp[:,14,:,:].reshape(-1)[np.argsort(resp[:,14,:,:].reshape(-1))[-5:]]))
+                print("Val max resp 15 value:"+str(resp[:,15,:,:].reshape(-1)[np.argsort(resp[:,15,:,:].reshape(-1))[-5:]]))
+                print("Val max resp 16 value:"+str(resp[:,16,:,:].reshape(-1)[np.argsort(resp[:,16,:,:].reshape(-1))[-5:]]))
+
+                print('Val Epoch: [{0}][{1}/{2}]\t'
+                    'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                    'Loss {loss.val:.4f} ({loss.avg:.4f}: {loss_resp.avg:.4f} + '
+                    '{loss_iou.avg:.4f} + {loss_coor.avg:.4f} + '
+                    '{loss_size.avg:.4f} + {loss_limb.avg:.4f})'.format(
+                    epoch+1, i, len(val_loader),batch_time=batch_time,
+                    loss=losses, loss_resp=losses_resp, loss_iou=losses_iou, loss_coor=losses_coor, loss_size=losses_size, loss_limb=losses_limb))
+                sys.stdout.flush()
+            #img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
 
     return losses.avg
 

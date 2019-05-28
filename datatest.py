@@ -45,13 +45,6 @@ from numpy import set_printoptions
 
 set_printoptions(threshold=maxsize)
 
-#parser = argparse.ArgumentParser()
-#parser.add_argument("-d", "--file", help="json file path")
-#parser.add_argument("-img", "--root_dir", help="path to train2017 or val2018")
-#
-#args = parser.parse_args()
-#root_dir = args.root_dir
-#
 insize = (384, 384)
 #outsize = (12, 12)
 #local_grid_size = (9, 9)
@@ -81,7 +74,7 @@ def restore_size(w, h):
  
 
 # Parse result
-def get_humans_by_feature(delta, x, y, w, h, e, detection_thresh=0.015, min_num_keypoints=1):
+def get_humans_by_feature(delta, x, y, w, h, e, detection_thresh=0.005, min_num_keypoints=1):
     start = time.time()
 
     #delta = resp * conf
@@ -110,7 +103,7 @@ def get_humans_by_feature(delta, x, y, w, h, e, detection_thresh=0.015, min_num_
 
     root_bbox = root_bbox[candidate]
     selected = non_maximum_suppression(
-        bbox=root_bbox, thresh=0.3, score=score)
+        bbox=root_bbox, thresh=1.0, score=score)
     logger.info('selected: %s', selected)
     root_bbox = root_bbox[selected]
     logger.info('detect instance {:.5f}'.format(time.time() - start))
@@ -272,14 +265,19 @@ def draw_humans(keypoint_names, edges, pil_image, humans, mask=None, visbbox=Fal
 
 if __name__== '__main__':
 
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-d", "--file", help="json file path")
+    parser.add_argument("-img", "--root_dir", help="path to train2017 or val2018")
+
+    args = parser.parse_args()
+    root_dir = args.root_dir
+
+
     train_set = KeypointsDataset(json_file = args.file, root_dir = args.root_dir,
             transform=transforms.Compose([
-                IAA((384,384),'train'),
+                IAA((384,384),'val'),
                 ToTensor()
-            ]) , draw = True)
-
-      
-    #print("insize:", insize)
+            ]) , draw = False)
 
     collate_fn = functools.partial(custom_collate_fn,
                                 insize=insize,
@@ -290,10 +288,11 @@ if __name__== '__main__':
 
     dataloader = DataLoader(
         train_set, batch_size=1, shuffle=False,
-        num_workers=1, collate_fn = collate_fn, pin_memory=True)
+        num_workers=1, collate_fn = collate_fn, sampler=None)
 
-    # Drawing Ground Truth 
-    for i, (img, delta, max_delta_ij, x, y, w, h, e) in enumerate(dataloader):
+    # Drtawing Ground Truth 
+    for i, (img, delta, weight, weight_ij, tx_half, ty_half, x, y, w, h, e) in enumerate(dataloader):
+    #for i, (img, delta, max_delta_ij, x, y, w, h, e) in enumerate(dataloader):
         if i>100:
             break
 

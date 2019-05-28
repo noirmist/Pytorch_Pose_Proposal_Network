@@ -15,12 +15,15 @@ class IAA(object):
         assert isinstance(output_size, (int, tuple))
         self.output_size = output_size
         self.mode = mode
+        #self.mean=[0.485, 0.456, 0.406]
+        #self.std=[0.229, 0.224, 0.225]
+
 
     def __call__(self, sample):
         #sample = {'image': image, 'keypoints': keypoints, 'bbox': bboxes, 'is_visible':is_visible, 'size': size}
         image, keypoints, bboxes, is_visible, size ,name = sample['image'], sample['keypoints'], sample['bbox'], sample['is_visible'], sample['size'], sample['name']
 
-
+        #image = torch.nn.functional.normalize(image, self.mean, self.std, False) 
         h, w = image.shape[:2]
 
         #filter existed keypoints , aka exclude zero value
@@ -47,7 +50,7 @@ class IAA(object):
             seq = iaa.Sequential([
                 iaa.Affine(
                     rotate=(-40, 40),
-                    scale=(0.25, 3.0),
+                    scale=(0.35, 2.5),
                     #fit_output=True
                 ), # random rotate by -40-40deg and scale to 35-250%, affects keypoints
                 #iaa.Multiply((0.5, 1.5)), # change brightness, doesn't affect keypoints
