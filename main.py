@@ -239,6 +239,9 @@ class PPNLoss(nn.Module):
 #        loss_limb = torch.sum(weight_ij * (e - te)**2, tuple(range(1, e.dim())))
 
         loss_resp = torch.sum((resp - delta)**2, tuple(range(1, resp.dim())) )
+        #MSE = torch.nn.MSELoss(reduction = 'sum')
+        #loss_resp = MSE(resp, delta)
+
         loss_iou = torch.sum(delta * (conf - ious)**2, tuple(range(1, conf.dim())))
         loss_coor = torch.sum(weight * ((x - tx_half)**2 + (y - ty_half)**2), tuple(range(1, x.dim())))
         loss_size = torch.sum(weight * ((torch.sqrt(torch.abs(w + EPSILON)) - torch.sqrt(torch.abs(tw + EPSILON)))**2 + (torch.sqrt(torch.abs(h + EPSILON)) - torch.sqrt(torch.abs(th + EPSILON)))**2 ), tuple(range(1, w.dim())))
@@ -370,6 +373,73 @@ def main():
         # delay_allreduce delays all communication to the end of the backward pass.
         model = DDP(model, delay_allreduce=True)
 
+    # define loss function (criterion) - custom loss
+    criterion = PPNLoss(
+                insize=insize,
+                outsize=outsize,
+                keypoint_names = KEYPOINT_NAMES,
+                local_grid_size = local_grid_size,
+                edges = EDGES,
+                lambda_resp=1.0,
+                lambda_iou=1.0,
+                lambda_coor=5.0,
+                lambda_size=5.0,
+                lambda_limb=0.5
+            ).cuda()
+
+#    # optionally resume from a checkpoint
+#    if args.resume:
+#        if os.path.isfile(args.resume):
+#            print("=> loading checkpoint '{}'".format(args.resume))
+#            checkpoint = torch.load(args.resume)
+#            args.start_epoch = checkpoint['epoch']
+#            best_loss = checkpoint['best_loss']
+#
+#            if args.parallel_ckpt:
+#                from collections import OrderedDict
+#                new_state_dict = OrderedDict()
+#                for k, v in checkpoint['state_dict'].items():
+#                    name = k[7:] # remove `module.`
+#                    new_state_dict[name] = v
+#
+#                model.load_state_dict(new_state_dict)
+#            else:
+#                model.load_state_dict(checkpoint['state_dict'])
+#
+#            optimizer.load_state_dict(checkpoint['optimizer'])
+#            print("=> loaded checkpoint '{}' (epoch {})"
+#                  .format(args.resume, checkpoint['epoch']))
+#        else:
+#            print("=> no checkpoint found at '{}'".format(args.resume))
+#
+    # Optionally resume from a checkpoint
+    if args.resume:
+        # Use a local scope to avoid dangling references
+        def resume():
+            if os.path.isfile(args.resume):
+                print("=> loading checkpoint '{}'".format(args.resume))
+                checkpoint = torch.load(args.resume, map_location = lambda storage, loc: storage.cuda(args.gpu))
+                args.start_epoch = checkpoint['epoch']
+                best_loss = checkpoint['best_loss']
+
+                if args.parallel_ckpt:
+                    from collections import OrderedDict
+                    new_state_dict = OrderedDict()
+                    for k, v in checkpoint['state_dict'].items():
+                        name = k[7:] # remove `module.`
+                        new_state_dict[name] = v
+
+                    model.load_state_dict(new_state_dict)
+                else:
+                    model.load_state_dict(checkpoint['state_dict'])
+
+                optimizer.load_state_dict(checkpoint['optimizer'])
+                print("=> loaded checkpoint '{}' (epoch {})"
+                      .format(args.resume, checkpoint['epoch']))
+            else:
+                print("=> no checkpoint found at '{}'".format(args.resume))
+        resume()
+
     # Data loading code
     #normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
     #                                 std=[0.229, 0.224, 0.225])
@@ -411,47 +481,6 @@ def main():
         batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, collate_fn = collate_fn, 
         sampler=val_sampler)
-
-    # define loss function (criterion) - custom loss
-    criterion = PPNLoss(
-                insize=insize,
-                outsize=outsize,
-                keypoint_names = KEYPOINT_NAMES,
-                local_grid_size = local_grid_size,
-                edges = EDGES,
-                lambda_resp=0.25,
-                lambda_iou=1.0,
-                lambda_coor=5.0,
-                lambda_size=5.0,
-                lambda_limb=0.5
-            ).cuda()
-
-    # optionally resume from a checkpoint
-    if args.resume:
-        if os.path.isfile(args.resume):
-            print("=> loading checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume)
-            args.start_epoch = checkpoint['epoch']
-            best_loss = checkpoint['best_loss']
-
-            if args.parallel_ckpt:
-                from collections import OrderedDict
-                new_state_dict = OrderedDict()
-                for k, v in checkpoint['state_dict'].items():
-                    name = k[7:] # remove `module.`
-                    new_state_dict[name] = v
-
-                model.load_state_dict(new_state_dict)
-            else:
-                model.load_state_dict(checkpoint['state_dict'])
-
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            print("=> loaded checkpoint '{}' (epoch {})"
-                  .format(args.resume, checkpoint['epoch']))
-        else:
-            print("=> no checkpoint found at '{}'".format(args.resume))
-
-    #cudnn.benchmark = True
 
     if args.evaluate:
         val_dataset = KeypointsDataset(json_file = args.val_file, root_dir = args.root_dir,
@@ -506,15 +535,8 @@ class test_data_prefetcher():
     def __init__(self, loader):
         self.loader = iter(loader)
         self.stream = torch.cuda.Stream()
-        #self.mean = torch.tensor([0.485 * 255, 0.456 * 255, 0.406 * 255]).cuda().view(1,3,1,1)
-        #self.std = torch.tensor([0.229 * 255, 0.224 * 255, 0.225 * 255]).cuda().view(1,3,1,1)
-        #self.mean = torch.tensor([0.485 , 0.456 , 0.406 ]).cuda().view(1,3,1,1)
-        #self.std = torch.tensor([0.229 , 0.224 , 0.225 ]).cuda().view(1,3,1,1)
-        # With Amp, it isn't necessary to manually convert data to half.
-        # With Amp, it isn't necessary to manually convert data to half.
-        # if args.fp16:
-        #     self.mean = self.mean.half()
-        #     self.std = self.std.half()
+        self.mean = torch.tensor([0.485 , 0.456 , 0.406 ]).cuda().view(1,3,1,1)
+        self.std = torch.tensor([0.229 , 0.224 , 0.225 ]).cuda().view(1,3,1,1)
         self.preload()
 
     def preload(self):
@@ -554,7 +576,7 @@ class test_data_prefetcher():
             #     self.next_input = self.next_input.half()
             # else:
             self.next_input = self.next_input.float()
-            #self.next_input = self.next_input.sub_(self.mean).div_(self.std)
+            self.next_input = self.next_input.sub_(self.mean).div_(self.std)
             
     def next(self):
         torch.cuda.current_stream().wait_stream(self.stream)
@@ -582,14 +604,8 @@ class data_prefetcher():
     def __init__(self, loader):
         self.loader = iter(loader)
         self.stream = torch.cuda.Stream()
-        #self.mean = torch.tensor([0.485 * 255, 0.456 * 255, 0.406 * 255]).cuda().view(1,3,1,1)
-        #self.std = torch.tensor([0.229 * 255, 0.224 * 255, 0.225 * 255]).cuda().view(1,3,1,1)
         self.mean = torch.tensor([0.485 , 0.456 , 0.406 ]).cuda().view(1,3,1,1)
         self.std = torch.tensor([0.229 , 0.224 , 0.225 ]).cuda().view(1,3,1,1)
-        # With Amp, it isn't necessary to manually convert data to half.
-        # if args.fp16:
-        #     self.mean = self.mean.half()
-        #     self.std = self.std.half()
         self.preload()
 
     def preload(self):
@@ -622,10 +638,6 @@ class data_prefetcher():
             self.next_th = self.next_th.cuda(non_blocking=True)
             self.next_te  = self.next_te.cuda(non_blocking=True)
 
-            # With Amp, it isn't necessary to manually convert data to half.
-            # if args.fp16:
-            #     self.next_input = self.next_input.half()
-            # else:
             self.next_input = self.next_input.float()
             self.next_input = self.next_input.sub_(self.mean).div_(self.std)
             
@@ -661,28 +673,28 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     model.train()
 
     end = time.time()
-#    prefetcher = data_prefetcher(train_loader)
+    prefetcher = data_prefetcher(train_loader)
+
+    img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
+    i = 0
+    while img is not None:
+        i += 1 
 #
-#    img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
-#    i = 0
-#    while img is not None:
-#        i += 1 
-
-    for i, (img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te) in enumerate(train_loader):
-        # measure data loading time
-        img = img.cuda()
-        delta = delta.cuda()
-
-        weight = weight.cuda()
-        weight_ij = weight_ij.cuda()
-        tx_half = tx_half.cuda()
-        ty_half = ty_half.cuda()
-
-        tx = tx.cuda()
-        ty = ty.cuda()
-        tw = tw.cuda()
-        th = th.cuda()
-        te = te.cuda()
+#    for i, (img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te) in enumerate(train_loader):
+#        # measure data loading time
+#        img = img.cuda()
+#        delta = delta.cuda()
+#
+#        weight = weight.cuda()
+#        weight_ij = weight_ij.cuda()
+#        tx_half = tx_half.cuda()
+#        ty_half = ty_half.cuda()
+#
+#        tx = tx.cuda()
+#        ty = ty.cuda()
+#        tw = tw.cuda()
+#        th = th.cuda()
+#        te = te.cuda()
 
         # compute output
         output = model(img)
@@ -705,7 +717,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                 reduced_loss_coor = reduce_tensor(loss_coor.data)
                 reduced_loss_size = reduce_tensor(loss_size.data)
                 reduced_loss_limb = reduce_tensor(loss_limb.data)
-                #reduced_resp_data = reduce_tensor(output.data)
+                reduced_resp_data = reduce_tensor(output.data)
             else:
                 reduced_loss = loss.data
                 reduced_loss_resp = loss_resp.data
@@ -724,14 +736,53 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
 
             torch.cuda.synchronize()
 
-            #K = len(KEYPOINT_NAMES)
-            #resp = reduced_resp_data[:, 0 * K:1 * K, :, :].cpu().numpy() # delta
-
             # measure elapsed time
             batch_time.update((time.time() - end)/args.print_freq)
             end = time.time()
 
             if args.local_rank == 0:
+
+                K = len(KEYPOINT_NAMES)
+                resp = reduced_resp_data[:, 0 * K:1 * K, :, :].cpu().numpy() # delta
+                temp_delta = delta.cpu().numpy()
+
+                if i % args.print_freq == 0 and  args.local_rank == 0:
+                    print("Trn max delta 0 value:"+str(temp_delta[:,0,:,:].reshape(-1)[np.argsort(temp_delta[:,0,:,:].reshape(-1))[-5:]]))
+                    print("Trn max resp 0 value:"+str(resp[:,0,:,:].reshape(-1)[np.argsort(resp[:,0,:,:].reshape(-1))[-5:]]))
+                    print("Trn max delta 1 value:"+str(temp_delta[:,1,:,:].reshape(-1)[np.argsort(temp_delta[:,1,:,:].reshape(-1))[-5:]]))
+                    print("Trn max resp 1 value:"+str(resp[:,1,:,:].reshape(-1)[np.argsort(resp[:,1,:,:].reshape(-1))[-5:]]))
+                    print("Trn max delta 2 value:"+str(temp_delta[:,2,:,:].reshape(-1)[np.argsort(temp_delta[:,2,:,:].reshape(-1))[-5:]]))
+                    print("Trn max resp 2 value:"+str(resp[:,2,:,:].reshape(-1)[np.argsort(resp[:,2,:,:].reshape(-1))[-5:]]))
+                    print("Trn max delta 3 value:"+str(temp_delta[:,3,:,:].reshape(-1)[np.argsort(temp_delta[:,3,:,:].reshape(-1))[-5:]]))
+                    print("Trn max resp 3 value:"+str(resp[:,3,:,:].reshape(-1)[np.argsort(resp[:,3,:,:].reshape(-1))[-5:]]))
+                    print("Trn max delta 4 value:"+str(temp_delta[:,4,:,:].reshape(-1)[np.argsort(temp_delta[:,4,:,:].reshape(-1))[-5:]]))
+                    print("Trn max resp 4 value:"+str(resp[:,4,:,:].reshape(-1)[np.argsort(resp[:,4,:,:].reshape(-1))[-5:]]))
+                    print("Trn max delta 5 value:"+str(temp_delta[:,5,:,:].reshape(-1)[np.argsort(temp_delta[:,5,:,:].reshape(-1))[-5:]]))
+                    print("Trn max resp 5 value:"+str(resp[:,5,:,:].reshape(-1)[np.argsort(resp[:,5,:,:].reshape(-1))[-5:]]))
+                    print("Trn max delta 6 value:"+str(temp_delta[:,6,:,:].reshape(-1)[np.argsort(temp_delta[:,6,:,:].reshape(-1))[-5:]]))
+                    print("Trn max resp 6 value:"+str(resp[:,6,:,:].reshape(-1)[np.argsort(resp[:,6,:,:].reshape(-1))[-5:]]))
+                    print("Trn max delta 7 value:"+str(temp_delta[:,7,:,:].reshape(-1)[np.argsort(temp_delta[:,7,:,:].reshape(-1))[-5:]]))
+                    print("Trn max resp 7 value:"+str(resp[:,7,:,:].reshape(-1)[np.argsort(resp[:,7,:,:].reshape(-1))[-5:]]))
+                    print("Trn max delta 8 value:"+str(temp_delta[:,8,:,:].reshape(-1)[np.argsort(temp_delta[:,8,:,:].reshape(-1))[-5:]]))
+                    print("Trn max resp 8 value:"+str(resp[:,8,:,:].reshape(-1)[np.argsort(resp[:,8,:,:].reshape(-1))[-5:]]))
+                    print("Trn max delta 9 value:"+str(temp_delta[:,9,:,:].reshape(-1)[np.argsort(temp_delta[:,9,:,:].reshape(-1))[-5:]]))
+                    print("Trn max resp 9 value:"+str(resp[:,9,:,:].reshape(-1)[np.argsort(resp[:,9,:,:].reshape(-1))[-5:]]))
+                    print("Trn max delta 10 value:"+str(temp_delta[:,10,:,:].reshape(-1)[np.argsort(temp_delta[:,10,:,:].reshape(-1))[-5:]]))
+                    print("Trn max resp 10 value:"+str(resp[:,10,:,:].reshape(-1)[np.argsort(resp[:,10,:,:].reshape(-1))[-5:]]))
+                    print("Trn max delta 11 value:"+str(temp_delta[:,11,:,:].reshape(-1)[np.argsort(temp_delta[:,11,:,:].reshape(-1))[-5:]]))
+                    print("Trn max resp 11 value:"+str(resp[:,11,:,:].reshape(-1)[np.argsort(resp[:,11,:,:].reshape(-1))[-5:]]))
+                    print("Trn max delta 12 value:"+str(temp_delta[:,12,:,:].reshape(-1)[np.argsort(temp_delta[:,12,:,:].reshape(-1))[-5:]]))
+                    print("Trn max resp 12 value:"+str(resp[:,12,:,:].reshape(-1)[np.argsort(resp[:,12,:,:].reshape(-1))[-5:]]))
+                    print("Trn max delta 13 value:"+str(temp_delta[:,13,:,:].reshape(-1)[np.argsort(temp_delta[:,13,:,:].reshape(-1))[-5:]]))
+                    print("Trn max resp 13 value:"+str(resp[:,13,:,:].reshape(-1)[np.argsort(resp[:,13,:,:].reshape(-1))[-5:]]))
+                    print("Trn max delta 14 value:"+str(temp_delta[:,14,:,:].reshape(-1)[np.argsort(temp_delta[:,14,:,:].reshape(-1))[-5:]]))
+                    print("Trn max resp 14 value:"+str(resp[:,14,:,:].reshape(-1)[np.argsort(resp[:,14,:,:].reshape(-1))[-5:]]))
+                    print("Trn max delta 15 value:"+str(temp_delta[:,15,:,:].reshape(-1)[np.argsort(temp_delta[:,15,:,:].reshape(-1))[-5:]]))
+                    print("Trn max resp 15 value:"+str(resp[:,15,:,:].reshape(-1)[np.argsort(resp[:,15,:,:].reshape(-1))[-5:]]))
+                    print("Trn max delta 16 value:"+str(temp_delta[:,16,:,:].reshape(-1)[np.argsort(temp_delta[:,16,:,:].reshape(-1))[-5:]]))
+                    print("Trn max resp 16 value:"+str(resp[:,16,:,:].reshape(-1)[np.argsort(resp[:,16,:,:].reshape(-1))[-5:]]))
+
+
                 #print("max resp value:"+str(np.amax(resp)))
                 print('Epoch: [{0}][{1}/{2}] {learning_rate:.7f}\t'
                     'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
@@ -742,11 +793,8 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                     loss=losses, loss_resp=losses_resp, loss_iou=losses_iou, loss_coor=losses_coor, loss_size=losses_size, loss_limb=losses_limb))
                 sys.stdout.flush()
                 plotter.plot('loss', 'train', 'PPN Loss', epoch+(i/((epoch+1)*len(train_loader))), losses.avg) 
-        #img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
+        img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
 
-#        if i>2:
-#            bbb = 0
-#            abc = 10/bbb
     return losses.avg
 
 #TODO function for evaluation like OKS
@@ -762,35 +810,37 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
     model.eval()
     outW, outH = outsize
 
-#    prefetcher = test_data_prefetcher(val_loader)
-#    img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te , raw_img= prefetcher.next()
-#    i = 0
-#    while img is not None:
-#        i += 1
-#        # compute output
-#        with torch.no_grad():
-    with torch.no_grad():
-        end=time.time()
-        
-        for i, (target_img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te) in enumerate(val_loader):
-        #for i, (target_img, _, _, _, _, _, _, _, _, _, _) in enumerate(val_loader):
-            
-            img = target_img.cuda()
+    prefetcher = data_prefetcher(val_loader)
+    img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
+    i = 0
+    while img is not None:
+        i += 1
+        # compute output
+        with torch.no_grad():
+
+#    with torch.no_grad():
+#        end=time.time()
+#        
+#        for i, (target_img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te) in enumerate(val_loader):
+#        #for i, (target_img, _, _, _, _, _, _, _, _, _, _) in enumerate(val_loader):
+#            
+#            img = target_img.cuda()
+#
+#
+#            delta = delta.cuda()
+#            weight = weight.cuda()
+#            weight_ij = weight_ij.cuda()
+#            tx_half = tx_half.cuda()
+#            ty_half = ty_half.cuda()
+#
+#            tx = tx.cuda()
+#            ty = ty.cuda()
+#            tw = tw.cuda()
+#            th = th.cuda()
+#            te = te.cuda()
 
             # compute output
             output = model(img)
-
-            delta = delta.cuda()
-            weight = weight.cuda()
-            weight_ij = weight_ij.cuda()
-            tx_half = tx_half.cuda()
-            ty_half = ty_half.cuda()
-
-            tx = tx.cuda()
-            ty = ty.cuda()
-            tw = tw.cuda()
-            th = th.cuda()
-            te = te.cuda()
 
             loss, loss_resp, loss_iou, loss_coor, loss_size, loss_limb = criterion(
                     img, output, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te)
@@ -858,7 +908,9 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
             #logger.info("max delta value:"+str(np.amax(delta[0])))
             humans = get_humans_by_feature(resp, x, y, w, h, e, detection_thresh=0.1)
 
-            pil_image = Image.fromarray(np.squeeze(img.cpu().numpy(), axis=0).astype(np.uint8).transpose(1, 2, 0)) 
+            #self.next_input = self.next_input.sub_(self.mean).div_(self.std)
+            raw_img = img.mul_(prefetcher.std).add_(prefetcher.mean)
+            pil_image = Image.fromarray(np.squeeze(raw_img.cpu().numpy(), axis=0).astype(np.uint8).transpose(1, 2, 0)) 
 
             pil_image = draw_humans(
                 keypoint_names=KEYPOINT_NAMES,
@@ -874,6 +926,7 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
             if i>500:
                 break
 
+            img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
 
 def validate(val_loader, model, criterion, epoch, args):
     batch_time = AverageMeter()
@@ -889,35 +942,34 @@ def validate(val_loader, model, criterion, epoch, args):
     model.eval()
 
     end = time.time()
+
+    prefetcher = data_prefetcher(val_loader)
+    img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
+    i = 0
+    while img is not None:
+        i += 1
+
+
+        # compute output
+        with torch.no_grad():
+
+#    with torch.no_grad():
+#        for i, (target_img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te) in enumerate(val_loader):
+#            
+#            img = target_img.cuda()
 #
-#    prefetcher = data_prefetcher(val_loader)
-#    img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
-#    i = 0
-#    while img is not None:
-#        i += 1
+#            delta = delta.cuda()
 #
-
-#        # compute output
-#        with torch.no_grad():
-#            # compute output
-
-    with torch.no_grad():
-        for i, (target_img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te) in enumerate(val_loader):
-            
-            img = target_img.cuda()
-
-            delta = delta.cuda()
-
-            weight = weight.cuda()
-            weight_ij = weight_ij.cuda()
-            tx_half = tx_half.cuda()
-            ty_half = ty_half.cuda()
-
-            tx = tx.cuda()
-            ty = ty.cuda()
-            tw = tw.cuda()
-            th = th.cuda()
-            te = te.cuda()
+#            weight = weight.cuda()
+#            weight_ij = weight_ij.cuda()
+#            tx_half = tx_half.cuda()
+#            ty_half = ty_half.cuda()
+#
+#            tx = tx.cuda()
+#            ty = ty.cuda()
+#            tw = tw.cuda()
+#            th = th.cuda()
+#            te = te.cuda()
 
             output = model(img)
 
@@ -954,24 +1006,42 @@ def validate(val_loader, model, criterion, epoch, args):
 
             K = len(KEYPOINT_NAMES)
             resp = reduced_resp_data[:, 0 * K:1 * K, :, :].cpu().numpy() # delta
+            temp_delta = delta.cpu().numpy()
 
             if i % args.print_freq == 0 and  args.local_rank == 0:
+                print("Val max delta 0 value:"+str(temp_delta[:,0,:,:].reshape(-1)[np.argsort(temp_delta[:,0,:,:].reshape(-1))[-5:]]))
                 print("Val max resp 0 value:"+str(resp[:,0,:,:].reshape(-1)[np.argsort(resp[:,0,:,:].reshape(-1))[-5:]]))
+                print("Val max delta 1 value:"+str(temp_delta[:,1,:,:].reshape(-1)[np.argsort(temp_delta[:,1,:,:].reshape(-1))[-5:]]))
                 print("Val max resp 1 value:"+str(resp[:,1,:,:].reshape(-1)[np.argsort(resp[:,1,:,:].reshape(-1))[-5:]]))
+                print("Val max delta 2 value:"+str(temp_delta[:,2,:,:].reshape(-1)[np.argsort(temp_delta[:,2,:,:].reshape(-1))[-5:]]))
                 print("Val max resp 2 value:"+str(resp[:,2,:,:].reshape(-1)[np.argsort(resp[:,2,:,:].reshape(-1))[-5:]]))
+                print("Val max delta 3 value:"+str(temp_delta[:,3,:,:].reshape(-1)[np.argsort(temp_delta[:,3,:,:].reshape(-1))[-5:]]))
                 print("Val max resp 3 value:"+str(resp[:,3,:,:].reshape(-1)[np.argsort(resp[:,3,:,:].reshape(-1))[-5:]]))
+                print("Val max delta 4 value:"+str(temp_delta[:,4,:,:].reshape(-1)[np.argsort(temp_delta[:,4,:,:].reshape(-1))[-5:]]))
                 print("Val max resp 4 value:"+str(resp[:,4,:,:].reshape(-1)[np.argsort(resp[:,4,:,:].reshape(-1))[-5:]]))
+                print("Val max delta 5 value:"+str(temp_delta[:,5,:,:].reshape(-1)[np.argsort(temp_delta[:,5,:,:].reshape(-1))[-5:]]))
                 print("Val max resp 5 value:"+str(resp[:,5,:,:].reshape(-1)[np.argsort(resp[:,5,:,:].reshape(-1))[-5:]]))
+                print("Val max delta 6 value:"+str(temp_delta[:,6,:,:].reshape(-1)[np.argsort(temp_delta[:,6,:,:].reshape(-1))[-5:]]))
                 print("Val max resp 6 value:"+str(resp[:,6,:,:].reshape(-1)[np.argsort(resp[:,6,:,:].reshape(-1))[-5:]]))
+                print("Val max delta 7 value:"+str(temp_delta[:,7,:,:].reshape(-1)[np.argsort(temp_delta[:,7,:,:].reshape(-1))[-5:]]))
                 print("Val max resp 7 value:"+str(resp[:,7,:,:].reshape(-1)[np.argsort(resp[:,7,:,:].reshape(-1))[-5:]]))
+                print("Val max delta 8 value:"+str(temp_delta[:,8,:,:].reshape(-1)[np.argsort(temp_delta[:,8,:,:].reshape(-1))[-5:]]))
                 print("Val max resp 8 value:"+str(resp[:,8,:,:].reshape(-1)[np.argsort(resp[:,8,:,:].reshape(-1))[-5:]]))
+                print("Val max delta 9 value:"+str(temp_delta[:,9,:,:].reshape(-1)[np.argsort(temp_delta[:,9,:,:].reshape(-1))[-5:]]))
                 print("Val max resp 9 value:"+str(resp[:,9,:,:].reshape(-1)[np.argsort(resp[:,9,:,:].reshape(-1))[-5:]]))
+                print("Val max delta 10 value:"+str(temp_delta[:,10,:,:].reshape(-1)[np.argsort(temp_delta[:,10,:,:].reshape(-1))[-5:]]))
                 print("Val max resp 10 value:"+str(resp[:,10,:,:].reshape(-1)[np.argsort(resp[:,10,:,:].reshape(-1))[-5:]]))
+                print("Val max delta 11 value:"+str(temp_delta[:,11,:,:].reshape(-1)[np.argsort(temp_delta[:,11,:,:].reshape(-1))[-5:]]))
                 print("Val max resp 11 value:"+str(resp[:,11,:,:].reshape(-1)[np.argsort(resp[:,11,:,:].reshape(-1))[-5:]]))
+                print("Val max delta 12 value:"+str(temp_delta[:,12,:,:].reshape(-1)[np.argsort(temp_delta[:,12,:,:].reshape(-1))[-5:]]))
                 print("Val max resp 12 value:"+str(resp[:,12,:,:].reshape(-1)[np.argsort(resp[:,12,:,:].reshape(-1))[-5:]]))
+                print("Val max delta 13 value:"+str(temp_delta[:,13,:,:].reshape(-1)[np.argsort(temp_delta[:,13,:,:].reshape(-1))[-5:]]))
                 print("Val max resp 13 value:"+str(resp[:,13,:,:].reshape(-1)[np.argsort(resp[:,13,:,:].reshape(-1))[-5:]]))
+                print("Val max delta 14 value:"+str(temp_delta[:,14,:,:].reshape(-1)[np.argsort(temp_delta[:,14,:,:].reshape(-1))[-5:]]))
                 print("Val max resp 14 value:"+str(resp[:,14,:,:].reshape(-1)[np.argsort(resp[:,14,:,:].reshape(-1))[-5:]]))
+                print("Val max delta 15 value:"+str(temp_delta[:,15,:,:].reshape(-1)[np.argsort(temp_delta[:,15,:,:].reshape(-1))[-5:]]))
                 print("Val max resp 15 value:"+str(resp[:,15,:,:].reshape(-1)[np.argsort(resp[:,15,:,:].reshape(-1))[-5:]]))
+                print("Val max delta 16 value:"+str(temp_delta[:,16,:,:].reshape(-1)[np.argsort(temp_delta[:,16,:,:].reshape(-1))[-5:]]))
                 print("Val max resp 16 value:"+str(resp[:,16,:,:].reshape(-1)[np.argsort(resp[:,16,:,:].reshape(-1))[-5:]]))
 
                 print('Val Epoch: [{0}][{1}/{2}]\t'
@@ -982,7 +1052,7 @@ def validate(val_loader, model, criterion, epoch, args):
                     epoch+1, i, len(val_loader),batch_time=batch_time,
                     loss=losses, loss_resp=losses_resp, loss_iou=losses_iou, loss_coor=losses_coor, loss_size=losses_size, loss_limb=losses_limb))
                 sys.stdout.flush()
-            #img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
+            img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
 
     return losses.avg
 
@@ -1039,8 +1109,8 @@ def adjust_learning_rate(optimizer, epoch, args):
     #lr = 0.007 * (1  - iters/260000)
     lr = get_lr(optimizer)
 
-    if epoch % 800 == 0 and epoch > 1 :
-        lr = 0.5* lr
+    if epoch % 400 == 0 and epoch > 1 :
+        lr = 0.7* lr
 
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
@@ -1049,7 +1119,7 @@ def reduce_tensor(tensor):
     rt = tensor.clone()
     dist.all_reduce(rt, op=dist.ReduceOp.SUM)
     #TODO hardcoding world_size
-    rt /= 4  # args.world_size
+    #rt /= 4  # args.world_size
     return rt
 
 
