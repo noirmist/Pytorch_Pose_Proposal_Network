@@ -59,7 +59,8 @@ class KeypointsDataset(Dataset):
         fname = self.filename_list[idx]
         img_name = os.path.join(self.root_dir, fname)
         #image = gray2rgb(io.imread(img_name).astype(np.uint8))
-        image = gray2rgb(io.imread(img_name))
+        #image = gray2rgb(io.imread(img_name))
+        image = io.imread(img_name)
         
         # center_x, center_y, visible_coco, width, height
         keypoints = np.array(self.data[fname][0], dtype='float32').reshape(-1,2)
@@ -322,17 +323,17 @@ def custom_collate_fn(datas,
 
 
     # Stack data 
-    image = torch.stack(images,0)
-    delta = torch.stack(deltas,0)
-    weight = torch.stack(weights,0)
-    weight_ij = torch.stack(weights_ij,0)
-    tx_half = torch.stack(tx_halfs,0)
-    ty_half = torch.stack(ty_halfs,0)
-    tx = torch.stack(txs,0)
-    ty = torch.stack(tys,0)
-    tw = torch.stack(tws,0)
-    th = torch.stack(ths,0)
-    te = torch.stack(tes,0)
+    image = torch.stack(images)
+    delta = torch.stack(deltas)
+    weight = torch.stack(weights)
+    weight_ij = torch.stack(weights_ij)
+    tx_half = torch.stack(tx_halfs)
+    ty_half = torch.stack(ty_halfs)
+    tx = torch.stack(txs)
+    ty = torch.stack(tys)
+    tw = torch.stack(tws)
+    th = torch.stack(ths)
+    te = torch.stack(tes)
 
 #    pront("collate_fn_shape: image", image.shape)
 #    sys.stdout.flush()

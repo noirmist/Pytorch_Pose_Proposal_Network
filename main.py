@@ -27,14 +27,9 @@ from torch.utils.data import Dataset, DataLoader
 
 import torch.utils.data.distributed
 import torchvision.transforms as transforms
-#from torchvision import utils
-#import torchvision.datasets as datasets
 import torchvision.models as models
 
 import numpy as np
-#import pandas as pd
-#import matplotlib.pyplot as plt
-#import matplotlib.patches as patches
 
 try:
     from apex.parallel import DistributedDataParallel as DDP
@@ -45,17 +40,7 @@ except ImportError:
     raise ImportError("Please install apex from https://www.github.com/nvidia/apex to run this example.")
 
 
-#from sys import maxsize
-#from numpy import set_printoptions
-#
-#set_printoptions(threshold=maxsize)
-
 from PIL import Image
-
-#import imgaug as ia
-#from imgaug import augmenters as iaa
-
-#from torchsummary import summary
 from visdom import Visdom
 
 #Custom models
@@ -192,12 +177,13 @@ class PPNLoss(nn.Module):
         self.lambda_size = lambda_size
         self.lambda_limb = lambda_limb
 
-        self.X, self.Y = torch.Tensor(np.meshgrid(np.arange(outW, dtype=np.float32), np.arange(outH, dtype=np.float32))).cuda()
+        #self.X, self.Y = torch.Tensor(np.meshgrid(np.arange(outW, dtype=np.float32), np.arange(outH, dtype=np.float32))).cuda()
 
     def restore_xy(self, x, y):
         gridW, gridH = self.gridsize
         outW, outH = self.outsize
-        return (x + self.X) * gridW, (y + self.Y) * gridH
+        X, Y = torch.Tensor(np.meshgrid(np.arange(outW, dtype=np.float32), np.arange(outH, dtype=np.float32))).cuda()
+        return (x + X) * gridW, (y + Y) * gridH
 
     def restore_size(self, w, h):
         inW, inH = self.insize
@@ -282,11 +268,6 @@ def main():
                       'You may see unexpected behavior when restarting '
                       'from checkpoints.')
 
-    #args.distributed = False
-    #if 'WORLD_SIZE' in os.environ:
-    #    args.distributed = int(os.environ['WORLD_SIZE']) > 1
-    #args.distributed = int(args.world_size) > 1
-
     args.gpu = 0
     args.world_size = 1
 
@@ -347,8 +328,6 @@ def main():
     # 384 to 512
     insize = (args.image_size, args.image_size)
 
-    # Scale learning rate based on global batch size
-    #args.lr = args.lr*float(args.batch_size*args.world_size)/256. 
     optimizer = torch.optim.SGD(model.parameters(), args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
@@ -380,38 +359,13 @@ def main():
                 keypoint_names = KEYPOINT_NAMES,
                 local_grid_size = local_grid_size,
                 edges = EDGES,
-                lambda_resp=1.0,
+                lambda_resp=0.25,
                 lambda_iou=1.0,
                 lambda_coor=5.0,
                 lambda_size=5.0,
                 lambda_limb=0.5
             ).cuda()
 
-#    # optionally resume from a checkpoint
-#    if args.resume:
-#        if os.path.isfile(args.resume):
-#            print("=> loading checkpoint '{}'".format(args.resume))
-#            checkpoint = torch.load(args.resume)
-#            args.start_epoch = checkpoint['epoch']
-#            best_loss = checkpoint['best_loss']
-#
-#            if args.parallel_ckpt:
-#                from collections import OrderedDict
-#                new_state_dict = OrderedDict()
-#                for k, v in checkpoint['state_dict'].items():
-#                    name = k[7:] # remove `module.`
-#                    new_state_dict[name] = v
-#
-#                model.load_state_dict(new_state_dict)
-#            else:
-#                model.load_state_dict(checkpoint['state_dict'])
-#
-#            optimizer.load_state_dict(checkpoint['optimizer'])
-#            print("=> loaded checkpoint '{}' (epoch {})"
-#                  .format(args.resume, checkpoint['epoch']))
-#        else:
-#            print("=> no checkpoint found at '{}'".format(args.resume))
-#
     # Optionally resume from a checkpoint
     if args.resume:
         # Use a local scope to avoid dangling references
@@ -703,8 +657,11 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
-        with amp.scale_loss(loss, optimizer) as scaled_loss:
-            scaled_loss.backward()
+        if args.distributed:
+            with amp.scale_loss(loss, optimizer) as scaled_loss:
+                scaled_loss.backward()
+        else:
+            loss.backward()
         optimizer.step()
 
         if i % args.print_freq == 0:
@@ -727,12 +684,21 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                 reduced_loss_limb = loss_limb.data
 
             # measure accuracy and record loss
-            losses.update(to_python_float(reduced_loss), img.size(0))
-            losses_resp.update(to_python_float(reduced_loss_resp), img.size(0))
-            losses_iou.update(to_python_float(reduced_loss_iou), img.size(0))
-            losses_coor.update(to_python_float(reduced_loss_coor), img.size(0))
-            losses_size.update(to_python_float(reduced_loss_size), img.size(0))
-            losses_limb.update(to_python_float(reduced_loss_limb), img.size(0))
+            if args.distributed:
+                losses.update(to_python_float(reduced_loss), img.size(0))
+                losses_resp.update(to_python_float(reduced_loss_resp), img.size(0))
+                losses_iou.update(to_python_float(reduced_loss_iou), img.size(0))
+                losses_coor.update(to_python_float(reduced_loss_coor), img.size(0))
+                losses_size.update(to_python_float(reduced_loss_size), img.size(0))
+                losses_limb.update(to_python_float(reduced_loss_limb), img.size(0))
+            else:
+                losses.update(loss.item(), img.size(0))
+                losses_resp.update(loss_resp.item(), img.size(0))
+                losses_iou.update(loss_iou.item(), img.size(0))
+                losses_coor.update(loss_coor.item(), img.size(0))
+                losses_size.update(loss_size.item(), img.size(0))
+                losses_limb.update(loss_limb.item(), img.size(0))
+
 
             torch.cuda.synchronize()
 
@@ -743,7 +709,10 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
             if args.local_rank == 0:
 
                 K = len(KEYPOINT_NAMES)
-                resp = reduced_resp_data[:, 0 * K:1 * K, :, :].cpu().numpy() # delta
+                if args.distributed:
+                    resp = reduced_resp_data[:, 0 * K:1 * K, :, :].cpu().numpy() # delta
+                else:
+                    resp = output.data[:, 0 * K:1 * K, :, :].cpu().numpy() # delta
                 temp_delta = delta.cpu().numpy()
 
                 if i % args.print_freq == 0 and  args.local_rank == 0:
@@ -993,19 +962,33 @@ def validate(val_loader, model, criterion, epoch, args):
                 reduced_loss_limb = loss_limb.data
 
             # measure and record loss
-            losses.update(to_python_float(reduced_loss), img.size(0))
-            losses_resp.update(to_python_float(reduced_loss_resp), img.size(0))
-            losses_iou.update(to_python_float(reduced_loss_iou), img.size(0))
-            losses_coor.update(to_python_float(reduced_loss_coor), img.size(0))
-            losses_size.update(to_python_float(reduced_loss_size), img.size(0))
-            losses_limb.update(to_python_float(reduced_loss_limb), img.size(0))
+
+            if args.distributed:
+                losses.update(to_python_float(reduced_loss), img.size(0))
+                losses_resp.update(to_python_float(reduced_loss_resp), img.size(0))
+                losses_iou.update(to_python_float(reduced_loss_iou), img.size(0))
+                losses_coor.update(to_python_float(reduced_loss_coor), img.size(0))
+                losses_size.update(to_python_float(reduced_loss_size), img.size(0))
+                losses_limb.update(to_python_float(reduced_loss_limb), img.size(0))
+            else:
+                losses.update(loss.item(), img.size(0))
+                losses_resp.update(loss_resp.item(), img.size(0))
+                losses_iou.update(loss_iou.item(), img.size(0))
+                losses_coor.update(loss_coor.item(), img.size(0))
+                losses_size.update(loss_size.item(), img.size(0))
+                losses_limb.update(loss_limb.item(), img.size(0))
 
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
 
             K = len(KEYPOINT_NAMES)
-            resp = reduced_resp_data[:, 0 * K:1 * K, :, :].cpu().numpy() # delta
+
+            if args.distributed:
+                resp = reduced_resp_data[:, 0 * K:1 * K, :, :].cpu().numpy() # delta
+            else:
+                resp = output.data[:, 0 * K:1 * K, :, :].cpu().numpy() # delta
+
             temp_delta = delta.cpu().numpy()
 
             if i % args.print_freq == 0 and  args.local_rank == 0:
@@ -1109,7 +1092,7 @@ def adjust_learning_rate(optimizer, epoch, args):
     #lr = 0.007 * (1  - iters/260000)
     lr = get_lr(optimizer)
 
-    if epoch % 400 == 0 and epoch > 1 :
+    if epoch % 10 == 0 and epoch > 1 :
         lr = 0.7* lr
 
     for param_group in optimizer.param_groups:

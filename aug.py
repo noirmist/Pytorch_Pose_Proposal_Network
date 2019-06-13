@@ -18,7 +18,6 @@ class IAA(object):
         #self.mean=[0.485, 0.456, 0.406]
         #self.std=[0.229, 0.224, 0.225]
 
-
     def __call__(self, sample):
         #sample = {'image': image, 'keypoints': keypoints, 'bbox': bboxes, 'is_visible':is_visible, 'size': size}
         image, keypoints, bboxes, is_visible, size ,name = sample['image'], sample['keypoints'], sample['bbox'], sample['is_visible'], sample['size'], sample['name']
