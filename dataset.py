@@ -15,7 +15,13 @@ logging.basicConfig(level=logging.INFO)
 
 
 class KeypointsDataset(Dataset):
-    def __init__(self, json_file, root_dir, transform=None, draw=False):
+    def __init__(self, json_file, root_dir, transform=None, draw=False,
+                insize=(384,384),
+                outsize=(12,12),
+                keypoint_names = KEYPOINT_NAMES ,
+                local_grid_size= (9,9),
+                edges = EDGES
+            ):
         """
         Args:
             json_file (string): path to the json file with annotations
@@ -52,6 +58,18 @@ class KeypointsDataset(Dataset):
             #is_labeled = np.ones(len(is_visible), dtype=np.bool)
             #entry[3].append(is_labeled)
 
+        # for encoding
+        self.insize = insize
+        self.outsize = outsize
+        self.keypoint_names = keypoint_names
+        self.local_grid_size = local_grid_size
+        self.edges = edges
+
+        self.inW, self.inH = insize
+        self.outW, self.outH = outsize
+        self.gridW = int(self.inW/ self.outW) 
+        self.gridH = int(self.inH/ self.outH) 
+        
     def __len__(self):
         return len(self.data)
 
@@ -83,149 +101,24 @@ class KeypointsDataset(Dataset):
         if self.draw:
             self.show_landmarks(sample['image'], sample['keypoints'], sample['bbox'], fname, idx)
 
-#        print("image_shape", sample['image'].shape)
-#        sys.stdout.flush()
-#        print("bbox:", sample['bbox'].shape)
-#        sys.stdout.flush()
-#        #, len(bboxes), len(sample['bbox']), sample['bbox'])
-#        print("size:",len(size), "is_vis:", len(is_visible))
-#        sys.stdout.flush()
-#        print("new keypoints:", sample['keypoints'].shape)
-#        sys.stdout.flush()
-#        print(sample['keypoints'])
-#        sys.stdout.flush()
-        #sample['keypoints'] = sample['keypoints'].reshape(-1,len(name_list),2) 
+        # Encode samples 
+        image = sample['image']
+        keypoints = sample['keypoints']
+        bbox = sample['bbox']
+        is_visible = sample['is_visible']
+        size = sample['size']
 
-        return sample
+        K = len(self.keypoint_names)
 
-    # Visutalization
-    def show_landmarks(self, img, keypoints, bboxes, fname, idx):
-        """Show image with keypoints"""
-        #print("show_landmarks:", type(image), image.dtype)
-
-        pil_image = Image.fromarray(img.numpy().astype(np.uint8).transpose(1, 2, 0))
-        #image = image.numpy().astype(np.uint8)
-        #image = np.array(image).transpose((1, 2, 0)) 
-        drawer = ImageDraw.Draw(pil_image)
-
-        keypoints = list(keypoints.reshape(-1,2).numpy())
-        for i, key in enumerate(keypoints):
-            r = 2
-            x = key[0]
-            y = key[1]
-            #print("keypoints:",x, y, name_list[i%len(name_list)])
-            #sys.stdout.flush()
-            drawer.ellipse((x - r, y - r, x + r, y + r), fill=COLOR_MAP[name_list[i%len(name_list)]])
-        #fig = plt.figure()
-        #plt.imshow(image)
-
-        # change 0 to nan
-        #x = keypoints[:,0].copy()
-        #x[x==0] = np.nan
-
-        #y = keypoints[:,1].copy()
-        #y[y==0] = np.nan
-
-        for (cx1,cy1,w,h) in bboxes:
-            k = 0
-            xmin = cx1 - w//2
-            ymin = cy1 - h//2
-            xmax = cx1 + w//2
-            ymax = cy1 + h//2
-
-            drawer.rectangle(xy=[xmin, ymin, xmax, ymax],
-                             fill=None,
-                             outline=COLOR_MAP[KEYPOINT_NAMES[k]])
-            drawer.rectangle(xy=[xmin+1, ymin+1, xmax-1, ymax-1],
-                             fill=None,
-                             outline=COLOR_MAP[KEYPOINT_NAMES[k]])
-
-            #rect = patches.Rectangle((cx1-w//2,cy1-h//2),w,h,linewidth=2,edgecolor='b',facecolor='none')
-            #plt.gca().add_patch(rect)
-
-        #plt.scatter(keypoints[:, 0], keypoints[:, 1], marker='.', c='r')
-        #plt.pause(0.0001)  # pause a bit so that plots are updated
-        #plt.savefig("/media/hci-gpu/hdd/PPN/Aug_image/image_"+str(idx)+".png") 
-        #plt.close()
-        pil_image.save("/media/hci-gpu/hdd/PPN/input_check_0527/"+fname) 
-
-#class BatchEncoder:
-#    def __init__(self, datas,
-#                    insize=(384,384),
-#                    outsize=(12,12),
-#                    keypoint_names = KEYPOINT_NAMES ,
-#                    local_grid_size= (9,9),
-#                    edges = EDGES
-#                    ):
-#        self.insize = insize
-#        self.outsize = outsize
-#        self.keypoint_names = keypoint_names
-#        self.local_grid_size = local_grid_size
-#        self.edges = edges
-#
-#        self.image, self.delta, self.weight, self.weight_ij, self.tx_half, self.ty_half, self.tx, self.ty, self.tw, self.th, self.te = self.encode(datas)
-#
-#    def pin_memory(self):
-#        self.image = self.image.pin_memory()
-#        self.delta = self.delta.pin_memory()
-#        self.weight = self.weight.pin_memory()
-#        self.weight_ij = self.weight_ij.pin_memory()
-#        self.tx_half = self.tx_half.pin_memory()
-#        self.ty_half = self.ty_half.pin_memory()
-#        self.tx = self.tx.pin_memory()
-#        self.ty = self.ty.pin_memory()
-#        self.tw = self.tw.pin_memory()
-#        self.th = self.th.pin_memory()
-#        self.te = self.te .pin_memory()
-#
-#        return self
-
-def custom_collate_fn(datas,
-                    insize=(384,384),
-                    outsize=(12,12),
-                    keypoint_names = KEYPOINT_NAMES ,
-                    local_grid_size= (9,9),
-                    edges = EDGES
-                    ):
-    inW, inH = insize
-    outW, outH = outsize
-    gridW = int(inW / outW)
-    gridH = int(inH / outH)
-
-    images = []
-    deltas = []
-
-    weights = []
-    weights_ij = []
-    tx_halfs = []
-    ty_halfs = []
-
-    txs = []
-    tys = []
-    tws = []
-    ths = []
-    tes = []
-    
-    for data in datas:
-        image = data['image']
-
-        keypoints = data['keypoints']
-
-        bbox = data['bbox']
-        is_visible = data['is_visible']
-        size = data['size']
-
-        K = len(keypoint_names)
-
-        delta = np.zeros((K, outH, outW), dtype=np.float32)
-        tx = np.zeros((K, outH, outW), dtype=np.float32)
-        ty = np.zeros((K, outH, outW), dtype=np.float32)
-        tw = np.zeros((K, outH, outW), dtype=np.float32)
-        th = np.zeros((K, outH, outW), dtype=np.float32)
+        delta = np.zeros((K, self.outH, self.outW), dtype=np.float32)
+        tx = np.zeros((K, self.outH, self.outW), dtype=np.float32)
+        ty = np.zeros((K, self.outH, self.outW), dtype=np.float32)
+        tw = np.zeros((K, self.outH, self.outW), dtype=np.float32)
+        th = np.zeros((K, self.outH, self.outW), dtype=np.float32)
         te = np.zeros((
-            len(edges),
-            local_grid_size[1], local_grid_size[0],
-            outH, outW), dtype=np.float32)
+            len(self.edges),
+            self.local_grid_size[1], self.local_grid_size[0],
+            self.outH, self.outW), dtype=np.float32)
 
 
         for (cx, cy, w, h), points, labeled, parts in zip(bbox, keypoints, is_visible, size):
@@ -242,52 +135,52 @@ def custom_collate_fn(datas,
             for k, (xy, l) in enumerate(zip(points, labeled)):
                 if not l:
                     continue
-                cx = xy[0] / gridW
-                cy = xy[1] / gridH
+                cx = xy[0] / self.gridW
+                cy = xy[1] / self.gridH
 
                 ix, iy = int(cx), int(cy)
                 sizeW = instanceW if k == 0 else partsW
                 sizeH = instanceH if k == 0 else partsH
 
-                if 0 <= iy < outH and 0 <= ix < outW:
-                    delta[k, iy, ix] = 1 
+                if 0 <= iy < self.outH and 0 <= ix < self.outW:
+                    delta[k, iy, ix] = 1
                     tx[k, iy, ix] = cx - ix
                     ty[k, iy, ix] = cy - iy
-                    tw[k, iy, ix] = sizeW / inW 
-                    th[k, iy, ix] = sizeH / inH 
+                    tw[k, iy, ix] = sizeW / self.inW
+                    th[k, iy, ix] = sizeH / self.inH
 
-            for ei, (s, t) in enumerate(edges):
+            for ei, (s, t) in enumerate(self.edges):
                 if not labeled[s]:
                     continue
                 if not labeled[t]:
                     continue
                 src_xy = points[s]
                 tar_xy = points[t]
-                iyx = (int(src_xy[1] / gridH), int(src_xy[0] / gridW))
-                jyx = (int(tar_xy[1] / gridH) - iyx[0] + local_grid_size[1] // 2,
-                       int(tar_xy[0] / gridW) - iyx[1] + local_grid_size[0] // 2)
+                iyx = (int(src_xy[1] / self.gridH), int(src_xy[0] / self.gridW))
+                jyx = (int(tar_xy[1] / self.gridH) - iyx[0] + self.local_grid_size[1] // 2,
+                       int(tar_xy[0] / self.gridW) - iyx[1] + self.local_grid_size[0] // 2)
 
-                if iyx[0] <= 0 or iyx[1] <= 0 or iyx[0] >= outH or iyx[1] >= outW:
+                if iyx[0] <= 0 or iyx[1] <= 0 or iyx[0] >= self.outH or iyx[1] >= self.outW:
                     continue
-                if jyx[0] <= 0 or jyx[1] <= 0 or jyx[0] >= local_grid_size[1] or jyx[1] >= local_grid_size[0]:
+                if jyx[0] <= 0 or jyx[1] <= 0 or jyx[0] >= self.local_grid_size[1] or jyx[1] >= self.local_grid_size[0]:
                     continue
 
                 te[ei, jyx[0], jyx[1], iyx[0], iyx[1]] = 1
 
         # define max(delta^i_k1, delta^j_k2) which is used for loss_limb
-        max_delta_ij = np.zeros((len(edges),
-                                outH, outW,
-                                local_grid_size[1], local_grid_size[0]), dtype=np.float32)
-        for ei,(s,t) in enumerate(edges):
+        max_delta_ij = np.zeros((len(self.edges),
+                                self.outH, self.outW,
+                                self.local_grid_size[1], self.local_grid_size[0]), dtype=np.float32)
+        for ei,(s,t) in enumerate(self.edges):
             max_delta_ij[ei][delta[s]!=0]=1.0
-            pad_delta_t=np.pad(delta[t],(local_grid_size[1]//2,local_grid_size[0]//2),'constant')
+            pad_delta_t=np.pad(delta[t],(self.local_grid_size[1]//2,self.local_grid_size[0]//2),'constant')
             # Convolve filter
             for r,c in zip(*np.where(delta[s]==0)):
-                rr=r+local_grid_size[1]//2
-                cc=c+local_grid_size[0]//2
+                rr=r+self.local_grid_size[1]//2
+                cc=c+self.local_grid_size[0]//2
                 max_delta_ij[ei][r,c]=pad_delta_t[
-                    rr-local_grid_size[1]//2:rr+local_grid_size[1]//2+1,
-                    cc-local_grid_size[0]//2:cc+local_grid_size[1]//2+1,
+                    rr-self.local_grid_size[1]//2:rr+self.local_grid_size[1]//2+1,
+                    cc-self.local_grid_size[0]//2:cc+self.local_grid_size[1]//2+1,
                 ]
 
         max_delta_ij = max_delta_ij.transpose(0,3,4,1,2)
@@ -307,44 +200,108 @@ def custom_collate_fn(datas,
         tx_half = tx + half
         ty_half = ty + half
 
-        images.append(image)
-        deltas.append(torch.from_numpy(delta))
+        # Convert numpy to tensor
+        delta = torch.from_numpy(delta)        
+        weight = torch.from_numpy(weight)        
+        weight_ij = torch.from_numpy(weight_ij)
+        tx = torch.from_numpy(tx)
+        ty = torch.from_numpy(ty)
+        tw = torch.from_numpy(tw)
+        th = torch.from_numpy(th)
+        te = torch.from_numpy(te)
+        tx_half = torch.from_numpy(tx_half)
+        ty_half = torch.from_numpy(ty_half)
 
-        weights.append(torch.from_numpy(weight))
-        weights_ij.append(torch.from_numpy(weight_ij))
-        tx_halfs.append(torch.from_numpy(tx_half))
-        ty_halfs.append(torch.from_numpy(ty_half))
+#        deltas.append(torch.from_numpy(delta))
+#        weights.append(torch.from_numpy(weight))
+#        weights_ij.append(torch.from_numpy(weight_ij))
+#        tx_halfs.append(torch.from_numpy(tx_half))
+#        ty_halfs.append(torch.from_numpy(ty_half))
+#
+#        txs.append(torch.from_numpy(tx))
+#        tys.append(torch.from_numpy(ty))
+#        tws.append(torch.from_numpy(tw))
+#        ths.append(torch.from_numpy(th))
+#        tes.append(torch.from_numpy(te))
 
-        txs.append(torch.from_numpy(tx))
-        tys.append(torch.from_numpy(ty))
-        tws.append(torch.from_numpy(tw))
-        ths.append(torch.from_numpy(th))
-        tes.append(torch.from_numpy(te))
+        #sample = {'image':image, 'delta':delta, 'weight':weight, 'weight_ij':weight_ij, 'tx':tx, 'ty':ty, 'tx_half':tx_half, 'ty_half':ty_half, 'tw':tw, 'th':th, 'te':te  }
+        #sample = [image, delta, weight, weight_ij, tx, ty, tx_half, ty_half, tw, th, te]
+        del sample
+        return [image, delta, weight, weight_ij, tx, ty, tx_half, ty_half, tw, th, te]
 
+    # Visutalization
+    def show_landmarks(self, img, keypoints, bboxes, fname, idx):
+        """Show image with keypoints"""
 
-    # Stack data 
-    image = torch.stack(images)
-    delta = torch.stack(deltas)
-    weight = torch.stack(weights)
-    weight_ij = torch.stack(weights_ij)
-    tx_half = torch.stack(tx_halfs)
-    ty_half = torch.stack(ty_halfs)
-    tx = torch.stack(txs)
-    ty = torch.stack(tys)
-    tw = torch.stack(tws)
-    th = torch.stack(ths)
-    te = torch.stack(tes)
+        pil_image = Image.fromarray(img.numpy().astype(np.uint8).transpose(1, 2, 0))
+        drawer = ImageDraw.Draw(pil_image)
 
-#    pront("collate_fn_shape: image", image.shape)
-#    sys.stdout.flush()
-#    print("delta", delta.shape)
-#    print("max_delta_ij", max_delta_ij.shape)
-#    print("max_delta_ij", np.unique(max_delta_ij.numpy()))
-#    print("tx", tx.shape)
-#    print("ty", ty.shape)
-#    print("tw", tw.shape)
-#    print("th", th.shape)
-#    print("te", te.shape)
+        keypoints = list(keypoints.reshape(-1,2).numpy())
+        for i, key in enumerate(keypoints):
+            r = 2
+            x = key[0]
+            y = key[1]
+            drawer.ellipse((x - r, y - r, x + r, y + r), fill=COLOR_MAP[name_list[i%len(name_list)]])
 
-    return image, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te
+        for (cx1,cy1,w,h) in bboxes:
+            k = 0
+            xmin = cx1 - w//2
+            ymin = cy1 - h//2
+            xmax = cx1 + w//2
+            ymax = cy1 + h//2
+
+            drawer.rectangle(xy=[xmin, ymin, xmax, ymax],
+                             fill=None,
+                             outline=COLOR_MAP[KEYPOINT_NAMES[k]])
+            drawer.rectangle(xy=[xmin+1, ymin+1, xmax-1, ymax-1],
+                             fill=None,
+                             outline=COLOR_MAP[KEYPOINT_NAMES[k]])
+        pil_image.save("/media/hci-gpu/hdd/PPN/input_check_0527/"+fname) 
+
+class CustomBatch:
+    def __init__(self, datas):
+        # [image, delta, weight, weight_ij, tx, ty, tx_half, ty_half, tw, th, te]
+        data = list(zip(*datas))
+
+        # Stack data 
+        self.image = torch.stack(data[0], 0)
+        self.delta = torch.stack(data[1], 0)
+        self.weight = torch.stack(data[2], 0)
+        self.weight_ij = torch.stack(data[3], 0)
+        self.tx = torch.stack(data[4], 0)
+        self.ty = torch.stack(data[5], 0)
+        self.tx_half = torch.stack(data[6], 0)
+        self.ty_half = torch.stack(data[7], 0)
+        self.tw = torch.stack(data[8], 0)
+        self.th = torch.stack(data[9], 0)
+        self.te = torch.stack(data[10], 0)
+
+    #    pront("collate_fn_shape: image", image.shape)
+    #    sys.stdout.flush()
+    #    print("delta", delta.shape)
+    #    print("max_delta_ij", max_delta_ij.shape)
+    #    print("max_delta_ij", np.unique(max_delta_ij.numpy()))
+    #    print("tx", tx.shape)
+    #    print("ty", ty.shape)
+    #    print("tw", tw.shape)
+    #    print("th", th.shape)
+    #    print("te", te.shape)
+
+    def pin_memory(self):
+        self.image = self.image.pin_memory()
+        self.delta = self.delta.pin_memory()
+        self.weight = self.weight.pin_memory()
+        self.weight_ij = self.weight_ij.pin_memory()
+        self.tx_half = self.tx_half.pin_memory()
+        self.ty_half = self.ty_half.pin_memory()
+        self.tx = self.tx.pin_memory()
+        self.ty = self.ty.pin_memory()
+        self.tw = self.tw.pin_memory()
+        self.th = self.th.pin_memory()
+        self.te = self.te .pin_memory()
+
+        return self
+
+def custom_collate_fn(batch):
+    return CustomBatch(batch)
  

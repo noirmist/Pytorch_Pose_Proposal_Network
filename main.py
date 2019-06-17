@@ -79,6 +79,7 @@ parser.add_argument('-b', '--batch-size', default=256, type=int,
                          'using Data Parallel or Distributed Data Parallel')
 parser.add_argument('--lr', '--learning-rate', default=0.1, type=float,
                     metavar='LR', help='initial learning rate', dest='lr')
+parser.add_argument('--reset_lr', action='store_true')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
 parser.add_argument('--wd', '--weight-decay', default=5e-4, type=float,
@@ -249,10 +250,11 @@ class PPNLoss(nn.Module):
 
 
 best_loss = 1e30000
+args = parser.parse_args()
 
 def main():
     global best_loss
-    args = parser.parse_args()
+    global args
     
     print("opt_level = {}".format(args.opt_level))
     print("keep_batchnorm_fp32 = {}".format(args.keep_batchnorm_fp32), type(args.keep_batchnorm_fp32))
@@ -394,6 +396,12 @@ def main():
                 print("=> no checkpoint found at '{}'".format(args.resume))
         resume()
 
+    if args.reset_lr:
+        lr = get_lr(optimizer)
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = args.lr
+
+
     # Data loading code
     #normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
     #                                 std=[0.229, 0.224, 0.225])
@@ -401,14 +409,28 @@ def main():
                     transform=transforms.Compose([
                         IAA(insize,'train'),
                         ToTensor()
-                    ]), draw=False)
+                    ]), 
+                    draw=False,
+                    insize = insize,
+                    outsize = outsize, 
+                    keypoint_names = KEYPOINT_NAMES ,
+                    local_grid_size = local_grid_size,
+                    edges = EDGES
+                    )
 
 
     val_dataset = KeypointsDataset(json_file = args.val_file, root_dir = args.root_dir,
                 transform=transforms.Compose([
                     IAA(insize,'val'),
                     ToTensor()
-                ]), draw=False)
+                ]), 
+                draw=False,
+                insize = insize,
+                outsize = outsize, 
+                keypoint_names = KEYPOINT_NAMES ,
+                local_grid_size = local_grid_size,
+                edges = EDGES
+                )
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
@@ -417,23 +439,26 @@ def main():
         train_sampler = None
         val_sampler = None
 
-    collate_fn = partial(custom_collate_fn, 
-                            insize = insize,
-                            outsize = outsize, 
-                            keypoint_names = KEYPOINT_NAMES ,
-                            local_grid_size = local_grid_size,
-                            edges = EDGES)
+#    collate_fn = partial(custom_collate_fn, 
+#                            insize = insize,
+#                            outsize = outsize, 
+#                            keypoint_names = KEYPOINT_NAMES ,
+#                            local_grid_size = local_grid_size,
+#                            edges = EDGES)
 
     train_loader = DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, 
-        collate_fn = collate_fn,
+        collate_fn = custom_collate_fn,
+        pin_memory = True,
         sampler=train_sampler)
 
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=args.batch_size, shuffle=False,
-        num_workers=args.workers, collate_fn = collate_fn, 
+        num_workers=args.workers, 
+        collate_fn = custom_collate_fn,
+        pin_memory = True,
         sampler=val_sampler)
 
     if args.evaluate:
@@ -441,12 +466,21 @@ def main():
                     transform=transforms.Compose([
                         IAA(insize,'test'),
                         ToTensor()
-                    ]), draw=False)
+                    ]), draw=False,
+                    insize = insize,
+                    outsize = outsize, 
+                    keypoint_names = KEYPOINT_NAMES ,
+                    local_grid_size = local_grid_size,
+                    edges = EDGES
+                    )
 
         val_loader = torch.utils.data.DataLoader(
             val_dataset,
             batch_size=args.batch_size, shuffle=False,
-            num_workers=args.workers, collate_fn = collate_fn, sampler = None)
+            num_workers=args.workers, 
+            collate_fn = custom_collate_fn, 
+            pin_memory = True,
+            sampler = None)
 
 
         test_output(val_loader, model, criterion, 1, outsize, local_grid_size, args)
@@ -564,10 +598,13 @@ class data_prefetcher():
 
     def preload(self):
         try:
-            self.next_input, self.next_delta, self.next_weight, self.next_weight_ij, self.next_tx_half, self.next_ty_half, self.next_tx, self.next_ty, self.next_tw, self.next_th, self.next_te = next(self.loader)
+            #self.next_input, self.next_delta, self.next_weight, self.next_weight_ij, self.next_tx_half, self.next_ty_half, self.next_tx, self.next_ty, self.next_tw, self.next_th, self.next_te = next(self.loader)
+            self.next_input = next(self.loader)
+
         except StopIteration:
             self.next_input = None
-            self.next_delta = None
+            self.next_img = None
+            self.next_delta =  None
             self.next_weight = None
             self.next_weight_ij = None
             self.next_tx_half = None
@@ -576,29 +613,29 @@ class data_prefetcher():
             self.next_ty = None
             self.next_tw = None
             self.next_th = None
-            self.next_te = None
+            self.next_te  = None
             return
 
         with torch.cuda.stream(self.stream):
-            self.next_input = self.next_input.cuda(non_blocking=True)
-            self.next_delta = self.next_delta.cuda(non_blocking=True)
-            self.next_weight = self.next_weight.cuda(non_blocking=True)
-            self.next_weight_ij = self.next_weight_ij.cuda(non_blocking=True)
-            self.next_tx_half = self.next_tx_half.cuda(non_blocking=True)
-            self.next_ty_half = self.next_ty_half.cuda(non_blocking=True)
-            self.next_tx = self.next_tx.cuda(non_blocking=True)
-            self.next_ty = self.next_ty.cuda(non_blocking=True)
-            self.next_tw = self.next_tw.cuda(non_blocking=True)
-            self.next_th = self.next_th.cuda(non_blocking=True)
-            self.next_te  = self.next_te.cuda(non_blocking=True)
+            self.next_img = self.next_input.image.cuda(non_blocking=True)
+            self.next_delta = self.next_input.delta.cuda(non_blocking=True)
+            self.next_weight = self.next_input.weight.cuda(non_blocking=True)
+            self.next_weight_ij = self.next_input.weight_ij.cuda(non_blocking=True)
+            self.next_tx_half = self.next_input.tx_half.cuda(non_blocking=True)
+            self.next_ty_half = self.next_input.ty_half.cuda(non_blocking=True)
+            self.next_tx = self.next_input.tx.cuda(non_blocking=True)
+            self.next_ty = self.next_input.ty.cuda(non_blocking=True)
+            self.next_tw = self.next_input.tw.cuda(non_blocking=True)
+            self.next_th = self.next_input.th.cuda(non_blocking=True)
+            self.next_te  = self.next_input.te.cuda(non_blocking=True)
 
-            self.next_input = self.next_input.float()
-            self.next_input = self.next_input.sub_(self.mean).div_(self.std)
+            #self.next_img = self.next_img.float()
+            self.next_img = self.next_img.sub_(self.mean).div_(self.std)
             
     def next(self):
         torch.cuda.current_stream().wait_stream(self.stream)
-        input = self.next_input
 
+        input = self.next_img
         delta = self.next_delta
         weight = self.next_weight
         weight_ij = self.next_weight_ij
@@ -629,26 +666,27 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     end = time.time()
     prefetcher = data_prefetcher(train_loader)
 
-    img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
-    i = 0
-    while img is not None:
-        i += 1 
+#    img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
+#    i = 0
+#    while img is not None:
+#        i += 1 
 #
-#    for i, (img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te) in enumerate(train_loader):
-#        # measure data loading time
-#        img = img.cuda()
-#        delta = delta.cuda()
-#
-#        weight = weight.cuda()
-#        weight_ij = weight_ij.cuda()
-#        tx_half = tx_half.cuda()
-#        ty_half = ty_half.cuda()
-#
-#        tx = tx.cuda()
-#        ty = ty.cuda()
-#        tw = tw.cuda()
-#        th = th.cuda()
-#        te = te.cuda()
+    #for i, (img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te) in enumerate(train_loader):
+    for i, samples in enumerate(train_loader):
+        # measure data loading time
+        img = samples.image.cuda()
+        delta = samples.delta.cuda()
+
+        weight = samples.weight.cuda()
+        weight_ij = samples.weight_ij.cuda()
+        tx_half = samples.tx_half.cuda()
+        ty_half = samples.ty_half.cuda()
+
+        tx = samples.tx.cuda()
+        ty = samples.ty.cuda()
+        tw = samples.tw.cuda()
+        th = samples.th.cuda()
+        te = samples.te.cuda()
 
         # compute output
         output = model(img)
@@ -709,13 +747,15 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
             if args.local_rank == 0:
 
                 K = len(KEYPOINT_NAMES)
+                # Predicted Value
                 if args.distributed:
                     resp = reduced_resp_data[:, 0 * K:1 * K, :, :].cpu().numpy() # delta
                 else:
                     resp = output.data[:, 0 * K:1 * K, :, :].cpu().numpy() # delta
+                # Ground Truth
                 temp_delta = delta.cpu().numpy()
 
-                if i % args.print_freq == 0 and  args.local_rank == 0:
+                if i % args.print_freq == 0 :
                     print("Trn max delta 0 value:"+str(temp_delta[:,0,:,:].reshape(-1)[np.argsort(temp_delta[:,0,:,:].reshape(-1))[-5:]]))
                     print("Trn max resp 0 value:"+str(resp[:,0,:,:].reshape(-1)[np.argsort(resp[:,0,:,:].reshape(-1))[-5:]]))
                     print("Trn max delta 1 value:"+str(temp_delta[:,1,:,:].reshape(-1)[np.argsort(temp_delta[:,1,:,:].reshape(-1))[-5:]]))
@@ -762,7 +802,16 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                     loss=losses, loss_resp=losses_resp, loss_iou=losses_iou, loss_coor=losses_coor, loss_size=losses_size, loss_limb=losses_limb))
                 sys.stdout.flush()
                 plotter.plot('loss', 'train', 'PPN Loss', epoch+(i/((epoch+1)*len(train_loader))), losses.avg) 
-        img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
+
+        del output
+        del loss
+        del loss_resp
+        del loss_iou
+        del loss_limb
+        del loss_coor
+        del loss_size
+
+        #img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
 
     return losses.avg
 
@@ -1035,6 +1084,8 @@ def validate(val_loader, model, criterion, epoch, args):
                     epoch+1, i, len(val_loader),batch_time=batch_time,
                     loss=losses, loss_resp=losses_resp, loss_iou=losses_iou, loss_coor=losses_coor, loss_size=losses_size, loss_limb=losses_limb))
                 sys.stdout.flush()
+
+
             img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
 
     return losses.avg
@@ -1092,17 +1143,18 @@ def adjust_learning_rate(optimizer, epoch, args):
     #lr = 0.007 * (1  - iters/260000)
     lr = get_lr(optimizer)
 
-    if epoch % 10 == 0 and epoch > 1 :
+    if epoch % 200 == 0 and epoch > 1 :
         lr = 0.7* lr
 
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
 def reduce_tensor(tensor):
+    global args
     rt = tensor.clone()
     dist.all_reduce(rt, op=dist.ReduceOp.SUM)
     #TODO hardcoding world_size
-    #rt /= 4  # args.world_size
+    rt /= args.world_size
     return rt
 
 

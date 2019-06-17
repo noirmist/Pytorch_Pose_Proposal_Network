@@ -83,7 +83,9 @@ class PoseProposalNet(nn.Module):
         self.lRelu = nn.LeakyReLU(0.1)
         self.bn = nn.BatchNorm2d(512)
         self.Relu = nn.ReLU()
-        #self.sigmoid = nn.Sigmoid()
+        self.dropout = nn.Dropout2d(p=0.2)
+        self.dropout5 = nn.Dropout2d(p=0.5)
+        self.sigmoid = nn.Sigmoid()
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -102,15 +104,29 @@ class PoseProposalNet(nn.Module):
         resnet_out = self.basicblock1(resnet_out)
         resnet_out = self.basicblock2(resnet_out)
 
+#        conv1_out = self.conv1(resnet_out)
+#        #bn1 = self.bn(conv1_out)
+#        #lRelu1 = self.lRelu(bn1)
+#        lRelu1 = self.lRelu(conv1_out)
+#        drp1 = self.dropout(lRelu1)
+#
+#        conv2_out = self.conv2(drp1)
+#        lRelu2 = self.lRelu(conv2_out)
+#        drp2 = self.dropout(lRelu2)
+#
+#        conv3_out = self.conv3(drp2)
+#        out = self.sigmoid(conv3_out)
+#        #out = self.Relu(conv3_out)
+
         conv1_out = self.conv1(resnet_out)
         bn1 = self.bn(conv1_out)
         lRelu1 = self.lRelu(bn1)
 
-        conv2_out = self.conv2(lRelu1)
+        conv2_out = self.conv2(lRelU1)
         lRelu2 = self.lRelu(conv2_out)
+        drp2 = self.dropout5(lRelu2)
 
-        conv3_out = self.conv3(lRelu2)
-        #out = self.sigmoid(conv3_out)
+        conv3_out = self.conv3(drp2)
         out = self.Relu(conv3_out)
 
         return out
