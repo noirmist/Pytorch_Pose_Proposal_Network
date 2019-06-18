@@ -664,7 +664,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     model.train()
 
     end = time.time()
-    prefetcher = data_prefetcher(train_loader)
+    #prefetcher = data_prefetcher(train_loader)
 
 #    img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
 #    i = 0
@@ -801,7 +801,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                     epoch+1, i, len(train_loader), learning_rate=get_lr(optimizer), batch_time=batch_time,
                     loss=losses, loss_resp=losses_resp, loss_iou=losses_iou, loss_coor=losses_coor, loss_size=losses_size, loss_limb=losses_limb))
                 sys.stdout.flush()
-                plotter.plot('loss', 'train', 'PPN Loss', epoch+(i/((epoch+1)*len(train_loader))), losses.avg) 
+                plotter.plot('loss', 'train', 'PPN Loss', epoch + (i/len(train_loader)), losses.avg) 
 
         del output
         del loss
@@ -1128,7 +1128,7 @@ class VisdomLinePlotter(object):
             self.plots[var_name] = self.viz.line(X=np.array([x,x]), Y=np.array([y,y]), env=self.env, opts=dict(
                 legend=[split_name],
                 title=title_name,
-                xlabel='Iteration',
+                xlabel='Epoch',
                 ylabel=var_name
             ))
         else:
@@ -1143,7 +1143,7 @@ def adjust_learning_rate(optimizer, epoch, args):
     #lr = 0.007 * (1  - iters/260000)
     lr = get_lr(optimizer)
 
-    if epoch % 200 == 0 and epoch > 1 :
+    if epoch % 200 == 0 and epoch > 800 :
         lr = 0.7* lr
 
     for param_group in optimizer.param_groups:

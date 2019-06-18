@@ -122,7 +122,7 @@ class PoseProposalNet(nn.Module):
         bn1 = self.bn(conv1_out)
         lRelu1 = self.lRelu(bn1)
 
-        conv2_out = self.conv2(lRelU1)
+        conv2_out = self.conv2(lRelu1)
         lRelu2 = self.lRelu(conv2_out)
         drp2 = self.dropout5(lRelu2)
 
