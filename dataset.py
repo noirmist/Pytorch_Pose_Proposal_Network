@@ -88,8 +88,8 @@ class KeypointsDataset(Dataset):
 
         sample = {'image': image, 'keypoints': keypoints, 'bbox': bboxes, 'is_visible':is_visible, 'size': size, 'name': img_name }
 
-#        print("test file name:", self.filename_list[idx])
-#        sys.stdout.flush()
+        print("test file name:", self.filename_list[idx])
+        sys.stdout.flush()
 #        print("old keypoints:", sample['keypoints'].shape)
 #        sys.stdout.flush()
           
@@ -120,10 +120,11 @@ class KeypointsDataset(Dataset):
             self.local_grid_size[1], self.local_grid_size[0],
             self.outH, self.outW), dtype=np.float32)
 
-
         for (cx, cy, w, h), points, labeled, parts in zip(bbox, keypoints, is_visible, size):
             partsW, partsH = parts, parts
             instanceW, instanceH = w, h
+            #partsW, partsH = self.parts_scale * math.sqrt(w * w + h * h)
+            #instanceW, instanceH = self.instance_scale * math.sqrt(w * w + h * h)
 
             points = [torch.tensor([cx.item(), cy.item()])] + list(points)
 

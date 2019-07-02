@@ -15,14 +15,11 @@ class IAA(object):
         assert isinstance(output_size, (int, tuple))
         self.output_size = output_size
         self.mode = mode
-        #self.mean=[0.485, 0.456, 0.406]
-        #self.std=[0.229, 0.224, 0.225]
 
     def __call__(self, sample):
         #sample = {'image': image, 'keypoints': keypoints, 'bbox': bboxes, 'is_visible':is_visible, 'size': size}
         image, keypoints, bboxes, is_visible, size ,name = sample['image'], sample['keypoints'], sample['bbox'], sample['is_visible'], sample['size'], sample['name']
 
-        #image = torch.nn.functional.normalize(image, self.mean, self.std, False) 
         h, w = image.shape[:2]
 
         #filter existed keypoints , aka exclude zero value
@@ -180,8 +177,11 @@ class IAA(object):
         return {'image': image_aug, 'keypoints': keypoints, 'bbox': new_bboxes, 'is_visible':is_visible, 'size': size}
 
 
-class ToTensor(object):
+class ToNormalizedTensor(object):
     """Convert ndarrays in sample to Tensors."""
+    def __init__(self):
+        self.mean = torch.tensor([0.485, 0.456, 0.406]).view(3,1,1)
+        self.std = torch.tensor([0.229, 0.224, 0.225]).view(3,1,1)
 
     def __call__(self, sample):
         image, keypoints, bbox = sample['image'], sample['keypoints'], sample['bbox']
@@ -192,9 +192,12 @@ class ToTensor(object):
         # torch image: C X H X W
         #print("totensor img shape:", image.shape)
         #sys.stdout.flush()
+
         image = np.array(image).transpose((2, 0, 1))
         image = torch.from_numpy(image)
+        # Normalize 
         image = image.float()
+        image = image.sub_(self.mean).div_(self.std)
         return {'image': image,
                 'keypoints': torch.from_numpy(keypoints),
                 'bbox': torch.from_numpy(np.asarray(bbox)),

@@ -217,21 +217,13 @@ class PPNLoss(nn.Module):
         (rx, ry), (rw, rh) = self.restore_xy(x, y), self.restore_size(w, h)
         (rtx, rty), (rtw, rth) = self.restore_xy(tx, ty), self.restore_size(tw, th)
         ious = iou((rx, ry, rw, rh), (rtx, rty, rtw, rth))
-
-        #resp = F.threshold(resp,0, 0)
-#        loss_resp = torch.sum(torch.abs(resp - delta), tuple(range(1, resp.dim())) )
-#        loss_iou = torch.sum(delta * torch.abs(conf - ious), tuple(range(1, conf.dim())))
-#        loss_coor = torch.sum(weight * ((x - tx_half)**2 + (y - ty_half)**2), tuple(range(1, x.dim())))
-#        loss_size = torch.sum(weight * ((torch.sqrt(torch.abs(w + EPSILON)) - torch.sqrt(torch.abs(tw + EPSILON)))**2 + (torch.sqrt(torch.abs(h + EPSILON)) - torch.sqrt(torch.abs(th + EPSILON)))**2 ), tuple(range(1, w.dim())))
-#        loss_limb = torch.sum(weight_ij * (e - te)**2, tuple(range(1, e.dim())))
-
+        
+        # Original loss function
         loss_resp = torch.sum((resp - delta)**2, tuple(range(1, resp.dim())) )
-        #MSE = torch.nn.MSELoss(reduction = 'sum')
-        #loss_resp = MSE(resp, delta)
 
         loss_iou = torch.sum(delta * (conf - ious)**2, tuple(range(1, conf.dim())))
         loss_coor = torch.sum(weight * ((x - tx_half)**2 + (y - ty_half)**2), tuple(range(1, x.dim())))
-        loss_size = torch.sum(weight * ((torch.sqrt(torch.abs(w + EPSILON)) - torch.sqrt(torch.abs(tw + EPSILON)))**2 + (torch.sqrt(torch.abs(h + EPSILON)) - torch.sqrt(torch.abs(th + EPSILON)))**2 ), tuple(range(1, w.dim())))
+        loss_size = torch.sum(weight * ((torch.sqrt(w + EPSILON) - torch.sqrt(tw + EPSILON))**2 + (torch.sqrt(h + EPSILON) - torch.sqrt(th + EPSILON))**2 ), tuple(range(1, w.dim())))
         loss_limb = torch.sum(weight_ij * (e - te)**2, tuple(range(1, e.dim())))
 
         loss_resp = torch.mean(loss_resp)
@@ -239,6 +231,39 @@ class PPNLoss(nn.Module):
         loss_coor = torch.mean(loss_coor)
         loss_size = torch.mean(loss_size)
         loss_limb = torch.mean(loss_limb)
+
+
+        # remake Binary cross entrophy function
+#        loss_bce = nn.BCEWithLogitsLoss(pos_weight= 4*torch.ones([K, outH, outW]).cuda())
+##        loss_bce_delta = nn.BCELoss(weight = delta)
+##        loss_bce_weight = nn.BCELoss(weight = weight)
+#        loss_bce_weight_ij = nn.BCEWithLogitsLoss(weight = weight_ij, pos_weight= 4*torch.ones([len(self.edges), self.local_grid_size[1], self.local_grid_size[0], outH, outW]).cuda())
+#
+#        loss_resp = loss_bce(resp, delta)
+#
+#        # ious derivative mission
+#        #loss_iou = loss_bce_delta(conf, ious)
+#
+#        loss_iou = torch.sum(delta * (conf - ious)**2, tuple(range(1, conf.dim())))
+#
+##        loss_coor_x = loss_bce_weight(x, tx)
+##        loss_coor_y = loss_bce_weight(y, ty)
+##        loss_coor = loss_coor_x + loss_coor_y 
+##
+##        loss_size_w = loss_bce_weight(w, tw)
+##        loss_size_h = loss_bce_weight(h, th)
+##        loss_size = loss_size_w + loss_size_h 
+#
+#        loss_coor = torch.sum(weight * ((x - tx_half)**2 + (y - ty_half)**2), tuple(range(1, x.dim())))
+#        loss_size = torch.sum(weight * ((torch.sqrt(torch.abs(w + EPSILON)) - torch.sqrt(torch.abs(tw + EPSILON)))**2 + (torch.sqrt(torch.abs(h + EPSILON)) - torch.sqrt(torch.abs(th + EPSILON)))**2 ), tuple(range(1, w.dim())))
+#
+#        loss_limb = loss_bce_weight_ij(e, te)
+#
+#        loss_resp = torch.mean(loss_resp)
+#        loss_iou = torch.mean(loss_iou)
+#        loss_coor = torch.mean(loss_coor)
+#        loss_size = torch.mean(loss_size)
+#        loss_limb = torch.mean(loss_limb)
 
         loss = self.lambda_resp * loss_resp + \
             self.lambda_iou * loss_iou + \
@@ -330,9 +355,11 @@ def main():
     # 384 to 512
     insize = (args.image_size, args.image_size)
 
-    optimizer = torch.optim.SGD(model.parameters(), args.lr,
-                                momentum=args.momentum,
-                                weight_decay=args.weight_decay)
+#    optimizer = torch.optim.SGD(model.parameters(), args.lr,
+#                                momentum=args.momentum,
+#                                weight_decay=args.weight_decay)
+
+    optimizer = torch.optim.Adam(model.parameters(), args.lr)
 
     # Initialize Amp.  Amp accepts either values or strings for the optional override arguments,
     # for convenient interoperation with argparse.
@@ -367,6 +394,13 @@ def main():
                 lambda_size=5.0,
                 lambda_limb=0.5
             ).cuda()
+    '''
+                lambda_resp=0.25,
+                lambda_iou=1.0,
+                lambda_coor=5.0,
+                lambda_size=5.0,
+                lambda_limb=0.5
+    '''
 
     # Optionally resume from a checkpoint
     if args.resume:
@@ -407,8 +441,8 @@ def main():
     #                                 std=[0.229, 0.224, 0.225])
     train_dataset = KeypointsDataset(json_file = args.train_file, root_dir = args.root_dir,
                     transform=transforms.Compose([
-                        IAA(insize,'train'),
-                        ToTensor()
+                        IAA(insize,'val'),
+                        ToNormalizedTensor()
                     ]), 
                     draw=False,
                     insize = insize,
@@ -422,7 +456,7 @@ def main():
     val_dataset = KeypointsDataset(json_file = args.val_file, root_dir = args.root_dir,
                 transform=transforms.Compose([
                     IAA(insize,'val'),
-                    ToTensor()
+                    ToNormalizedTensor()
                 ]), 
                 draw=False,
                 insize = insize,
@@ -462,28 +496,29 @@ def main():
         sampler=val_sampler)
 
     if args.evaluate:
-        val_dataset = KeypointsDataset(json_file = args.val_file, root_dir = args.root_dir,
-                    transform=transforms.Compose([
-                        IAA(insize,'test'),
-                        ToTensor()
-                    ]), draw=False,
-                    insize = insize,
-                    outsize = outsize, 
-                    keypoint_names = KEYPOINT_NAMES ,
-                    local_grid_size = local_grid_size,
-                    edges = EDGES
-                    )
+#        val_dataset = KeypointsDataset(json_file = args.val_file, root_dir = args.root_dir,
+#                    transform=transforms.Compose([
+#                        IAA(insize,'test'),
+#                        ToTensor()
+#                    ]), draw=False,
+#                    insize = insize,
+#                    outsize = outsize, 
+#                    keypoint_names = KEYPOINT_NAMES ,
+#                    local_grid_size = local_grid_size,
+#                    edges = EDGES
+#                    )
+#
+#        val_loader = torch.utils.data.DataLoader(
+#            val_dataset,
+#            batch_size=args.batch_size, shuffle=False,
+#            num_workers=args.workers, 
+#            collate_fn = custom_collate_fn, 
+#            pin_memory = True,
+#            sampler = None)
 
-        val_loader = torch.utils.data.DataLoader(
-            val_dataset,
-            batch_size=args.batch_size, shuffle=False,
-            num_workers=args.workers, 
-            collate_fn = custom_collate_fn, 
-            pin_memory = True,
-            sampler = None)
 
-
-        test_output(val_loader, model, criterion, 1, outsize, local_grid_size, args)
+        #test_output(val_loader, model, criterion, 1, outsize, local_grid_size, args)
+        test_output(train_loader, model, criterion, 1, outsize, local_grid_size, args)
         return
 
     # Start trainin iterations
@@ -491,24 +526,25 @@ def main():
         if args.distributed:
             train_sampler.set_epoch(epoch)
 
-        adjust_learning_rate(optimizer, epoch, args)
+        #adjust_learning_rate(optimizer, epoch, args)
 
         # train for one epoch
         train_epoch_loss = train(train_loader, model, criterion, optimizer, epoch, args)
 
 
         # evaluate on validation set
-        epoch_loss = validate(val_loader, model, criterion, epoch, args)
+        # epoch_loss = validate(val_loader, model, criterion, epoch, args)
 
 
         # remember best acc@1 and save checkpoint
         if args.local_rank == 0:
 
             plotter.plot('loss', 'train(epoch)', 'PPN Loss', epoch+1, train_epoch_loss) 
-            plotter.plot('loss', 'val', 'PPN Loss', epoch+1, epoch_loss) 
+            #plotter.plot('loss', 'val', 'PPN Loss', epoch+1, epoch_loss) 
 
-            is_best = epoch_loss < best_loss
-            best_loss = min(epoch_loss, best_loss)
+            #is_best = epoch_loss < best_loss
+            is_best = False
+            #best_loss = min(epoch_loss, best_loss)
 
             print("checkpoints checking")
             save_checkpoint({
@@ -750,47 +786,59 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                 # Predicted Value
                 if args.distributed:
                     resp = reduced_resp_data[:, 0 * K:1 * K, :, :].cpu().numpy() # delta
+                    w = reduced_resp_data[:, 4 * K:5 * K, :, :].cpu().numpy() # delta
+                    h = reduced_resp_data[:, 5 * K:6 * K, :, :].cpu().numpy() # delta
                 else:
                     resp = output.data[:, 0 * K:1 * K, :, :].cpu().numpy() # delta
+                    w = output.data[:, 4 * K:5 * K, :, :].cpu().numpy() # delta
+                    h = output.data[:, 5 * K:6 * K, :, :].cpu().numpy() # delta
                 # Ground Truth
                 temp_delta = delta.cpu().numpy()
+                temp_tw = tw.cpu().numpy()
+                temp_th = th.cpu().numpy()
 
                 if i % args.print_freq == 0 :
-                    print("Trn max delta 0 value:"+str(temp_delta[:,0,:,:].reshape(-1)[np.argsort(temp_delta[:,0,:,:].reshape(-1))[-5:]]))
-                    print("Trn max resp 0 value:"+str(resp[:,0,:,:].reshape(-1)[np.argsort(resp[:,0,:,:].reshape(-1))[-5:]]))
-                    print("Trn max delta 1 value:"+str(temp_delta[:,1,:,:].reshape(-1)[np.argsort(temp_delta[:,1,:,:].reshape(-1))[-5:]]))
-                    print("Trn max resp 1 value:"+str(resp[:,1,:,:].reshape(-1)[np.argsort(resp[:,1,:,:].reshape(-1))[-5:]]))
-                    print("Trn max delta 2 value:"+str(temp_delta[:,2,:,:].reshape(-1)[np.argsort(temp_delta[:,2,:,:].reshape(-1))[-5:]]))
-                    print("Trn max resp 2 value:"+str(resp[:,2,:,:].reshape(-1)[np.argsort(resp[:,2,:,:].reshape(-1))[-5:]]))
-                    print("Trn max delta 3 value:"+str(temp_delta[:,3,:,:].reshape(-1)[np.argsort(temp_delta[:,3,:,:].reshape(-1))[-5:]]))
-                    print("Trn max resp 3 value:"+str(resp[:,3,:,:].reshape(-1)[np.argsort(resp[:,3,:,:].reshape(-1))[-5:]]))
-                    print("Trn max delta 4 value:"+str(temp_delta[:,4,:,:].reshape(-1)[np.argsort(temp_delta[:,4,:,:].reshape(-1))[-5:]]))
-                    print("Trn max resp 4 value:"+str(resp[:,4,:,:].reshape(-1)[np.argsort(resp[:,4,:,:].reshape(-1))[-5:]]))
-                    print("Trn max delta 5 value:"+str(temp_delta[:,5,:,:].reshape(-1)[np.argsort(temp_delta[:,5,:,:].reshape(-1))[-5:]]))
-                    print("Trn max resp 5 value:"+str(resp[:,5,:,:].reshape(-1)[np.argsort(resp[:,5,:,:].reshape(-1))[-5:]]))
-                    print("Trn max delta 6 value:"+str(temp_delta[:,6,:,:].reshape(-1)[np.argsort(temp_delta[:,6,:,:].reshape(-1))[-5:]]))
-                    print("Trn max resp 6 value:"+str(resp[:,6,:,:].reshape(-1)[np.argsort(resp[:,6,:,:].reshape(-1))[-5:]]))
-                    print("Trn max delta 7 value:"+str(temp_delta[:,7,:,:].reshape(-1)[np.argsort(temp_delta[:,7,:,:].reshape(-1))[-5:]]))
-                    print("Trn max resp 7 value:"+str(resp[:,7,:,:].reshape(-1)[np.argsort(resp[:,7,:,:].reshape(-1))[-5:]]))
-                    print("Trn max delta 8 value:"+str(temp_delta[:,8,:,:].reshape(-1)[np.argsort(temp_delta[:,8,:,:].reshape(-1))[-5:]]))
-                    print("Trn max resp 8 value:"+str(resp[:,8,:,:].reshape(-1)[np.argsort(resp[:,8,:,:].reshape(-1))[-5:]]))
-                    print("Trn max delta 9 value:"+str(temp_delta[:,9,:,:].reshape(-1)[np.argsort(temp_delta[:,9,:,:].reshape(-1))[-5:]]))
-                    print("Trn max resp 9 value:"+str(resp[:,9,:,:].reshape(-1)[np.argsort(resp[:,9,:,:].reshape(-1))[-5:]]))
-                    print("Trn max delta 10 value:"+str(temp_delta[:,10,:,:].reshape(-1)[np.argsort(temp_delta[:,10,:,:].reshape(-1))[-5:]]))
-                    print("Trn max resp 10 value:"+str(resp[:,10,:,:].reshape(-1)[np.argsort(resp[:,10,:,:].reshape(-1))[-5:]]))
-                    print("Trn max delta 11 value:"+str(temp_delta[:,11,:,:].reshape(-1)[np.argsort(temp_delta[:,11,:,:].reshape(-1))[-5:]]))
-                    print("Trn max resp 11 value:"+str(resp[:,11,:,:].reshape(-1)[np.argsort(resp[:,11,:,:].reshape(-1))[-5:]]))
-                    print("Trn max delta 12 value:"+str(temp_delta[:,12,:,:].reshape(-1)[np.argsort(temp_delta[:,12,:,:].reshape(-1))[-5:]]))
-                    print("Trn max resp 12 value:"+str(resp[:,12,:,:].reshape(-1)[np.argsort(resp[:,12,:,:].reshape(-1))[-5:]]))
-                    print("Trn max delta 13 value:"+str(temp_delta[:,13,:,:].reshape(-1)[np.argsort(temp_delta[:,13,:,:].reshape(-1))[-5:]]))
-                    print("Trn max resp 13 value:"+str(resp[:,13,:,:].reshape(-1)[np.argsort(resp[:,13,:,:].reshape(-1))[-5:]]))
-                    print("Trn max delta 14 value:"+str(temp_delta[:,14,:,:].reshape(-1)[np.argsort(temp_delta[:,14,:,:].reshape(-1))[-5:]]))
-                    print("Trn max resp 14 value:"+str(resp[:,14,:,:].reshape(-1)[np.argsort(resp[:,14,:,:].reshape(-1))[-5:]]))
-                    print("Trn max delta 15 value:"+str(temp_delta[:,15,:,:].reshape(-1)[np.argsort(temp_delta[:,15,:,:].reshape(-1))[-5:]]))
-                    print("Trn max resp 15 value:"+str(resp[:,15,:,:].reshape(-1)[np.argsort(resp[:,15,:,:].reshape(-1))[-5:]]))
-                    print("Trn max delta 16 value:"+str(temp_delta[:,16,:,:].reshape(-1)[np.argsort(temp_delta[:,16,:,:].reshape(-1))[-5:]]))
-                    print("Trn max resp 16 value:"+str(resp[:,16,:,:].reshape(-1)[np.argsort(resp[:,16,:,:].reshape(-1))[-5:]]))
+                    print("Trn max delta 0 value:"+str(temp_delta[0,0,:,:].reshape(-1)[np.argsort(temp_delta[0,0,:,:].reshape(-1))[-7:]]))
+                    print("Trn max resp 0 value:"+str(resp[0,0,:,:].reshape(-1)[np.argsort(resp[0,0,:,:].reshape(-1))[-7:]]))
 
+                    print("Trn max w 0 value:"+str(temp_tw[0,0,:,:].reshape(-1)[np.argsort(temp_tw[0,0,:,:].reshape(-1))[-7:]]))
+                    print("Trn max tw 0 value:"+str(w[0,0,:,:].reshape(-1)[np.argsort(w[0,0,:,:].reshape(-1))[-7:]]))
+                    print("Trn max h 0 value:"+str(temp_th[0,0,:,:].reshape(-1)[np.argsort(temp_th[0,0,:,:].reshape(-1))[-7:]]))
+                    print("Trn max th 0 value:"+str(h[0,0,:,:].reshape(-1)[np.argsort(h[0,0,:,:].reshape(-1))[-7:]]))
+
+#                    print("Trn max delta 1 value:"+str(temp_delta[0,1,:,:].reshape(-1)[np.argsort(temp_delta[0,1,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max resp 1 value:"+str(resp[0,1,:,:].reshape(-1)[np.argsort(resp[0,1,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max delta 2 value:"+str(temp_delta[0,2,:,:].reshape(-1)[np.argsort(temp_delta[0,2,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max resp 2 value:"+str(resp[0,2,:,:].reshape(-1)[np.argsort(resp[0,2,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max delta 3 value:"+str(temp_delta[0,3,:,:].reshape(-1)[np.argsort(temp_delta[0,3,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max resp 3 value:"+str(resp[0,3,:,:].reshape(-1)[np.argsort(resp[0,3,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max delta 4 value:"+str(temp_delta[0,4,:,:].reshape(-1)[np.argsort(temp_delta[0,4,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max resp 4 value:"+str(resp[0,4,:,:].reshape(-1)[np.argsort(resp[0,4,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max delta 5 value:"+str(temp_delta[0,5,:,:].reshape(-1)[np.argsort(temp_delta[0,5,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max resp 5 value:"+str(resp[0,5,:,:].reshape(-1)[np.argsort(resp[0,5,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max delta 6 value:"+str(temp_delta[0,6,:,:].reshape(-1)[np.argsort(temp_delta[0,6,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max resp 6 value:"+str(resp[0,6,:,:].reshape(-1)[np.argsort(resp[0,6,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max delta 7 value:"+str(temp_delta[0,7,:,:].reshape(-1)[np.argsort(temp_delta[0,7,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max resp 7 value:"+str(resp[0,7,:,:].reshape(-1)[np.argsort(resp[0,7,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max delta 8 value:"+str(temp_delta[0,8,:,:].reshape(-1)[np.argsort(temp_delta[0,8,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max resp 8 value:"+str(resp[0,8,:,:].reshape(-1)[np.argsort(resp[0,8,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max delta 9 value:"+str(temp_delta[0,9,:,:].reshape(-1)[np.argsort(temp_delta[0,9,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max resp 9 value:"+str(resp[0,9,:,:].reshape(-1)[np.argsort(resp[0,9,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max delta 10 value:"+str(temp_delta[0,10,:,:].reshape(-1)[np.argsort(temp_delta[0,10,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max resp 10 value:"+str(resp[0,10,:,:].reshape(-1)[np.argsort(resp[0,10,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max delta 11 value:"+str(temp_delta[0,11,:,:].reshape(-1)[np.argsort(temp_delta[0,11,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max resp 11 value:"+str(resp[0,11,:,:].reshape(-1)[np.argsort(resp[0,11,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max delta 12 value:"+str(temp_delta[0,12,:,:].reshape(-1)[np.argsort(temp_delta[0,12,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max resp 12 value:"+str(resp[0,12,:,:].reshape(-1)[np.argsort(resp[0,12,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max delta 13 value:"+str(temp_delta[0,13,:,:].reshape(-1)[np.argsort(temp_delta[0,13,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max resp 13 value:"+str(resp[0,13,:,:].reshape(-1)[np.argsort(resp[0,13,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max delta 14 value:"+str(temp_delta[0,14,:,:].reshape(-1)[np.argsort(temp_delta[0,14,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max resp 14 value:"+str(resp[0,14,:,:].reshape(-1)[np.argsort(resp[0,14,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max delta 15 value:"+str(temp_delta[0,15,:,:].reshape(-1)[np.argsort(temp_delta[0,15,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max resp 15 value:"+str(resp[0,15,:,:].reshape(-1)[np.argsort(resp[0,15,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max delta 16 value:"+str(temp_delta[0,16,:,:].reshape(-1)[np.argsort(temp_delta[0,16,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max resp 16 value:"+str(resp[0,16,:,:].reshape(-1)[np.argsort(resp[0,16,:,:].reshape(-1))[-7:]]))
+#
 
                 #print("max resp value:"+str(np.amax(resp)))
                 print('Epoch: [{0}][{1}/{2}] {learning_rate:.7f}\t'
@@ -823,39 +871,40 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
     data_time = AverageMeter()
 
     end = time.time()
+    # revert normalized image to original image
+    mean = torch.tensor([0.485 , 0.456 , 0.406 ]).cuda().view(1,3,1,1)
+    std = torch.tensor([0.229 , 0.224 , 0.225 ]).cuda().view(1,3,1,1)
 
     # switch to evaluate mode
     model.eval()
     outW, outH = outsize
 
-    prefetcher = data_prefetcher(val_loader)
-    img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
-    i = 0
-    while img is not None:
-        i += 1
-        # compute output
-        with torch.no_grad():
+#    prefetcher = data_prefetcher(val_loader)
+#    img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
+#    i = 0
+#    while img is not None:
+#        i += 1
+#        # compute output
+#        with torch.no_grad():
 
-#    with torch.no_grad():
-#        end=time.time()
-#        
-#        for i, (target_img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te) in enumerate(val_loader):
-#        #for i, (target_img, _, _, _, _, _, _, _, _, _, _) in enumerate(val_loader):
-#            
-#            img = target_img.cuda()
-#
-#
-#            delta = delta.cuda()
-#            weight = weight.cuda()
-#            weight_ij = weight_ij.cuda()
-#            tx_half = tx_half.cuda()
-#            ty_half = ty_half.cuda()
-#
-#            tx = tx.cuda()
-#            ty = ty.cuda()
-#            tw = tw.cuda()
-#            th = th.cuda()
-#            te = te.cuda()
+    with torch.no_grad():
+        end=time.time()
+
+        for i, samples in enumerate(val_loader):
+            # measure data loading time
+            img = samples.image.cuda()
+            delta = samples.delta.cuda()
+
+            weight = samples.weight.cuda()
+            weight_ij = samples.weight_ij.cuda()
+            tx_half = samples.tx_half.cuda()
+            ty_half = samples.ty_half.cuda()
+
+            tx = samples.tx.cuda()
+            ty = samples.ty.cuda()
+            tw = samples.tw.cuda()
+            th = samples.th.cuda()
+            te = samples.te.cuda()
 
             # compute output
             output = model(img)
@@ -890,7 +939,6 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
                 outH, outW
             ).cpu().numpy()
 
-            print(delta.cpu().numpy()[0][0].shape)
             logger.info("Non-Zero GT: "+str(np.count_nonzero(delta.cpu().numpy()[0])))
             #logger.info("Non-Zero GT1: "+str(np.count_nonzero(delta.cpu().numpy()[0][1])))
             logger.info("resp dim:"+str(resp.shape))
@@ -924,10 +972,10 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
             logger.info("max conf value:"+str(np.amax(conf[0])))
             #delta = resp*conf
             #logger.info("max delta value:"+str(np.amax(delta[0])))
-            humans = get_humans_by_feature(resp, x, y, w, h, e, detection_thresh=0.1)
+            humans = get_humans_by_feature(resp, x, y, w, h, e, detection_thresh=0.01)
 
             #self.next_input = self.next_input.sub_(self.mean).div_(self.std)
-            raw_img = img.mul_(prefetcher.std).add_(prefetcher.mean)
+            raw_img = img.mul_(std).add_(mean)
             pil_image = Image.fromarray(np.squeeze(raw_img.cpu().numpy(), axis=0).astype(np.uint8).transpose(1, 2, 0)) 
 
             pil_image = draw_humans(
@@ -941,10 +989,10 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
 
             pil_image.save('output/training_test/predict_test_result_'+str(i)+'.png', 'PNG')
 
-            if i>500:
+            if i>100:
                 break
 
-            img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
+            #img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
 
 def validate(val_loader, model, criterion, epoch, args):
     batch_time = AverageMeter()
@@ -1031,50 +1079,50 @@ def validate(val_loader, model, criterion, epoch, args):
             batch_time.update(time.time() - end)
             end = time.time()
 
-            K = len(KEYPOINT_NAMES)
-
-            if args.distributed:
-                resp = reduced_resp_data[:, 0 * K:1 * K, :, :].cpu().numpy() # delta
-            else:
-                resp = output.data[:, 0 * K:1 * K, :, :].cpu().numpy() # delta
-
-            temp_delta = delta.cpu().numpy()
+#            K = len(KEYPOINT_NAMES)
+#
+#            if args.distributed:
+#                resp = reduced_resp_data[:, 0 * K:1 * K, :, :].cpu().numpy() # delta
+#            else:
+#                resp = output.data[:, 0 * K:1 * K, :, :].cpu().numpy() # delta
+#
+#            temp_delta = delta.cpu().numpy()
 
             if i % args.print_freq == 0 and  args.local_rank == 0:
-                print("Val max delta 0 value:"+str(temp_delta[:,0,:,:].reshape(-1)[np.argsort(temp_delta[:,0,:,:].reshape(-1))[-5:]]))
-                print("Val max resp 0 value:"+str(resp[:,0,:,:].reshape(-1)[np.argsort(resp[:,0,:,:].reshape(-1))[-5:]]))
-                print("Val max delta 1 value:"+str(temp_delta[:,1,:,:].reshape(-1)[np.argsort(temp_delta[:,1,:,:].reshape(-1))[-5:]]))
-                print("Val max resp 1 value:"+str(resp[:,1,:,:].reshape(-1)[np.argsort(resp[:,1,:,:].reshape(-1))[-5:]]))
-                print("Val max delta 2 value:"+str(temp_delta[:,2,:,:].reshape(-1)[np.argsort(temp_delta[:,2,:,:].reshape(-1))[-5:]]))
-                print("Val max resp 2 value:"+str(resp[:,2,:,:].reshape(-1)[np.argsort(resp[:,2,:,:].reshape(-1))[-5:]]))
-                print("Val max delta 3 value:"+str(temp_delta[:,3,:,:].reshape(-1)[np.argsort(temp_delta[:,3,:,:].reshape(-1))[-5:]]))
-                print("Val max resp 3 value:"+str(resp[:,3,:,:].reshape(-1)[np.argsort(resp[:,3,:,:].reshape(-1))[-5:]]))
-                print("Val max delta 4 value:"+str(temp_delta[:,4,:,:].reshape(-1)[np.argsort(temp_delta[:,4,:,:].reshape(-1))[-5:]]))
-                print("Val max resp 4 value:"+str(resp[:,4,:,:].reshape(-1)[np.argsort(resp[:,4,:,:].reshape(-1))[-5:]]))
-                print("Val max delta 5 value:"+str(temp_delta[:,5,:,:].reshape(-1)[np.argsort(temp_delta[:,5,:,:].reshape(-1))[-5:]]))
-                print("Val max resp 5 value:"+str(resp[:,5,:,:].reshape(-1)[np.argsort(resp[:,5,:,:].reshape(-1))[-5:]]))
-                print("Val max delta 6 value:"+str(temp_delta[:,6,:,:].reshape(-1)[np.argsort(temp_delta[:,6,:,:].reshape(-1))[-5:]]))
-                print("Val max resp 6 value:"+str(resp[:,6,:,:].reshape(-1)[np.argsort(resp[:,6,:,:].reshape(-1))[-5:]]))
-                print("Val max delta 7 value:"+str(temp_delta[:,7,:,:].reshape(-1)[np.argsort(temp_delta[:,7,:,:].reshape(-1))[-5:]]))
-                print("Val max resp 7 value:"+str(resp[:,7,:,:].reshape(-1)[np.argsort(resp[:,7,:,:].reshape(-1))[-5:]]))
-                print("Val max delta 8 value:"+str(temp_delta[:,8,:,:].reshape(-1)[np.argsort(temp_delta[:,8,:,:].reshape(-1))[-5:]]))
-                print("Val max resp 8 value:"+str(resp[:,8,:,:].reshape(-1)[np.argsort(resp[:,8,:,:].reshape(-1))[-5:]]))
-                print("Val max delta 9 value:"+str(temp_delta[:,9,:,:].reshape(-1)[np.argsort(temp_delta[:,9,:,:].reshape(-1))[-5:]]))
-                print("Val max resp 9 value:"+str(resp[:,9,:,:].reshape(-1)[np.argsort(resp[:,9,:,:].reshape(-1))[-5:]]))
-                print("Val max delta 10 value:"+str(temp_delta[:,10,:,:].reshape(-1)[np.argsort(temp_delta[:,10,:,:].reshape(-1))[-5:]]))
-                print("Val max resp 10 value:"+str(resp[:,10,:,:].reshape(-1)[np.argsort(resp[:,10,:,:].reshape(-1))[-5:]]))
-                print("Val max delta 11 value:"+str(temp_delta[:,11,:,:].reshape(-1)[np.argsort(temp_delta[:,11,:,:].reshape(-1))[-5:]]))
-                print("Val max resp 11 value:"+str(resp[:,11,:,:].reshape(-1)[np.argsort(resp[:,11,:,:].reshape(-1))[-5:]]))
-                print("Val max delta 12 value:"+str(temp_delta[:,12,:,:].reshape(-1)[np.argsort(temp_delta[:,12,:,:].reshape(-1))[-5:]]))
-                print("Val max resp 12 value:"+str(resp[:,12,:,:].reshape(-1)[np.argsort(resp[:,12,:,:].reshape(-1))[-5:]]))
-                print("Val max delta 13 value:"+str(temp_delta[:,13,:,:].reshape(-1)[np.argsort(temp_delta[:,13,:,:].reshape(-1))[-5:]]))
-                print("Val max resp 13 value:"+str(resp[:,13,:,:].reshape(-1)[np.argsort(resp[:,13,:,:].reshape(-1))[-5:]]))
-                print("Val max delta 14 value:"+str(temp_delta[:,14,:,:].reshape(-1)[np.argsort(temp_delta[:,14,:,:].reshape(-1))[-5:]]))
-                print("Val max resp 14 value:"+str(resp[:,14,:,:].reshape(-1)[np.argsort(resp[:,14,:,:].reshape(-1))[-5:]]))
-                print("Val max delta 15 value:"+str(temp_delta[:,15,:,:].reshape(-1)[np.argsort(temp_delta[:,15,:,:].reshape(-1))[-5:]]))
-                print("Val max resp 15 value:"+str(resp[:,15,:,:].reshape(-1)[np.argsort(resp[:,15,:,:].reshape(-1))[-5:]]))
-                print("Val max delta 16 value:"+str(temp_delta[:,16,:,:].reshape(-1)[np.argsort(temp_delta[:,16,:,:].reshape(-1))[-5:]]))
-                print("Val max resp 16 value:"+str(resp[:,16,:,:].reshape(-1)[np.argsort(resp[:,16,:,:].reshape(-1))[-5:]]))
+#                print("Val max delta 0 value:"+str(temp_delta[0,0,:,:].reshape(-1)[np.argsort(temp_delta[0,0,:,:].reshape(-1))[-10:]]))
+#                print("Val max resp 0 value:"+str(resp[0,0,:,:].reshape(-1)[np.argsort(resp[0,0,:,:].reshape(-1))[-10:]]))
+#                print("Val max delta 1 value:"+str(temp_delta[0,1,:,:].reshape(-1)[np.argsort(temp_delta[0,1,:,:].reshape(-1))[-10:]]))
+#                print("Val max resp 1 value:"+str(resp[0,1,:,:].reshape(-1)[np.argsort(resp[0,1,:,:].reshape(-1))[-10:]]))
+##                print("Val max delta 2 value:"+str(temp_delta[:,2,:,:].reshape(-1)[np.argsort(temp_delta[:,2,:,:].reshape(-1))[-110:]]))
+##                print("Val max resp 2 value:"+str(resp[:,2,:,:].reshape(-1)[np.argsort(resp[:,2,:,:].reshape(-1))[-110:]]))
+##                print("Val max delta 3 value:"+str(temp_delta[:,3,:,:].reshape(-1)[np.argsort(temp_delta[:,3,:,:].reshape(-1))[-110:]]))
+##                print("Val max resp 3 value:"+str(resp[:,3,:,:].reshape(-1)[np.argsort(resp[:,3,:,:].reshape(-1))[-110:]]))
+#                print("Val max delta 4 value:"+str(temp_delta[0,4,:,:].reshape(-1)[np.argsort(temp_delta[0,4,:,:].reshape(-1))[-10:]]))
+#                print("Val max resp 4 value:"+str(resp[0,4,:,:].reshape(-1)[np.argsort(resp[0,4,:,:].reshape(-1))[-10:]]))
+##                print("Val max delta 5 value:"+str(temp_delta[:,5,:,:].reshape(-1)[np.argsort(temp_delta[:,5,:,:].reshape(-1))[-110:]]))
+##                print("Val max resp 5 value:"+str(resp[:,5,:,:].reshape(-1)[np.argsort(resp[:,5,:,:].reshape(-1))[-110:]]))
+##                print("Val max delta 6 value:"+str(temp_delta[:,6,:,:].reshape(-1)[np.argsort(temp_delta[:,6,:,:].reshape(-1))[-110:]]))
+##                print("Val max resp 6 value:"+str(resp[:,6,:,:].reshape(-1)[np.argsort(resp[:,6,:,:].reshape(-1))[-110:]]))
+##                print("Val max delta 7 value:"+str(temp_delta[:,7,:,:].reshape(-1)[np.argsort(temp_delta[:,7,:,:].reshape(-1))[-110:]]))
+##                print("Val max resp 7 value:"+str(resp[:,7,:,:].reshape(-1)[np.argsort(resp[:,7,:,:].reshape(-1))[-110:]]))
+##                print("Val max delta 8 value:"+str(temp_delta[:,8,:,:].reshape(-1)[np.argsort(temp_delta[:,8,:,:].reshape(-1))[-110:]]))
+##                print("Val max resp 8 value:"+str(resp[:,8,:,:].reshape(-1)[np.argsort(resp[:,8,:,:].reshape(-1))[-110:]]))
+##                print("Val max delta 9 value:"+str(temp_delta[:,9,:,:].reshape(-1)[np.argsort(temp_delta[:,9,:,:].reshape(-1))[-110:]]))
+##                print("Val max resp 9 value:"+str(resp[:,9,:,:].reshape(-1)[np.argsort(resp[:,9,:,:].reshape(-1))[-110:]]))
+##                print("Val max delta 10 value:"+str(temp_delta[:,10,:,:].reshape(-1)[np.argsort(temp_delta[:,10,:,:].reshape(-1))[-110:]]))
+##                print("Val max resp 10 value:"+str(resp[:,10,:,:].reshape(-1)[np.argsort(resp[:,10,:,:].reshape(-1))[-110:]]))
+##                print("Val max delta 11 value:"+str(temp_delta[:,11,:,:].reshape(-1)[np.argsort(temp_delta[:,11,:,:].reshape(-1))[-110:]]))
+##                print("Val max resp 11 value:"+str(resp[:,11,:,:].reshape(-1)[np.argsort(resp[:,11,:,:].reshape(-1))[-110:]]))
+##                print("Val max delta 12 value:"+str(temp_delta[:,12,:,:].reshape(-1)[np.argsort(temp_delta[:,12,:,:].reshape(-1))[-110:]]))
+##                print("Val max resp 12 value:"+str(resp[:,12,:,:].reshape(-1)[np.argsort(resp[:,12,:,:].reshape(-1))[-110:]]))
+##                print("Val max delta 13 value:"+str(temp_delta[:,13,:,:].reshape(-1)[np.argsort(temp_delta[:,13,:,:].reshape(-1))[-110:]]))
+##                print("Val max resp 13 value:"+str(resp[:,13,:,:].reshape(-1)[np.argsort(resp[:,13,:,:].reshape(-1))[-110:]]))
+##                print("Val max delta 14 value:"+str(temp_delta[:,14,:,:].reshape(-1)[np.argsort(temp_delta[:,14,:,:].reshape(-1))[-110:]]))
+##                print("Val max resp 14 value:"+str(resp[:,14,:,:].reshape(-1)[np.argsort(resp[:,14,:,:].reshape(-1))[-110:]]))
+##                print("Val max delta 15 value:"+str(temp_delta[:,15,:,:].reshape(-1)[np.argsort(temp_delta[:,15,:,:].reshape(-1))[-110:]]))
+##                print("Val max resp 15 value:"+str(resp[:,15,:,:].reshape(-1)[np.argsort(resp[:,15,:,:].reshape(-1))[-110:]]))
+##                print("Val max delta 16 value:"+str(temp_delta[:,16,:,:].reshape(-1)[np.argsort(temp_delta[:,16,:,:].reshape(-1))[-110:]]))
+##                print("Val max resp 16 value:"+str(resp[:,16,:,:].reshape(-1)[np.argsort(resp[:,16,:,:].reshape(-1))[-110:]]))
 
                 print('Val Epoch: [{0}][{1}/{2}]\t'
                     'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
@@ -1143,7 +1191,7 @@ def adjust_learning_rate(optimizer, epoch, args):
     #lr = 0.007 * (1  - iters/260000)
     lr = get_lr(optimizer)
 
-    if epoch % 200 == 0 and epoch > 800 :
+    if epoch % 200 == 0 and epoch > 400 :
         lr = 0.7* lr
 
     for param_group in optimizer.param_groups:

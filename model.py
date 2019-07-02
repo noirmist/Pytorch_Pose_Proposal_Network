@@ -3,6 +3,7 @@ import sys
 import torch.nn as nn
 from config import *
 import torchvision.models as models
+from gelu import GELU
 
 def conv3x3(in_planes, out_planes, stride=1):
     """3x3 convolution with padding"""
@@ -83,13 +84,14 @@ class PoseProposalNet(nn.Module):
         self.lRelu = nn.LeakyReLU(0.1)
         self.bn = nn.BatchNorm2d(512)
         self.Relu = nn.ReLU()
+        self.Gelu = GELU()
         self.dropout = nn.Dropout2d(p=0.2)
         self.dropout5 = nn.Dropout2d(p=0.5)
         self.sigmoid = nn.Sigmoid()
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                nn.init.kaiming_normal_(m.weight, a=0.1, mode='fan_in', nonlinearity='leaky_relu')
             elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
@@ -108,7 +110,7 @@ class PoseProposalNet(nn.Module):
 #        #bn1 = self.bn(conv1_out)
 #        #lRelu1 = self.lRelu(bn1)
 #        lRelu1 = self.lRelu(conv1_out)
-#        drp1 = self.dropout(lRelu1)
+#        drp1 = self.dropout5(lRelu1)
 #
 #        conv2_out = self.conv2(drp1)
 #        lRelu2 = self.lRelu(conv2_out)
@@ -120,14 +122,18 @@ class PoseProposalNet(nn.Module):
 
         conv1_out = self.conv1(resnet_out)
         bn1 = self.bn(conv1_out)
+        #Gelu1 = self.Gelu(bn1)
         lRelu1 = self.lRelu(bn1)
 
         conv2_out = self.conv2(lRelu1)
-        lRelu2 = self.lRelu(conv2_out)
-        drp2 = self.dropout5(lRelu2)
+        bn2 = self.bn(conv2_out)
+        #Gelu2 = self.Gelu(bn2)
+        lRelu2 = self.lRelu(bn2)
+        #drp2 = self.dropout5(Gelu2)
 
-        conv3_out = self.conv3(drp2)
-        out = self.Relu(conv3_out)
+        conv3_out = self.conv3(lRelu2)
+        out = self.sigmoid(conv3_out)
+        #out = self.conv3(drp2)
 
         return out
 
