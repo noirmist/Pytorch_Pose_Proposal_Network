@@ -41,22 +41,20 @@ class KeypointsDataset(Dataset):
 
         for filename in np.unique([anno['file_name'] for anno in self.annotations]):
             self.data[filename] = [], [], [], []
+            #self.data[filename] = [], [], [], [], [] # People
 
         min_num_keypoints = 1
+
         for anno in self.annotations:
             is_visible = anno['is_visible']
             if sum(is_visible) < min_num_keypoints:
                 continue
-            #keypoints = [anno['joint_pos'][k][::-1] for k in KEYPOINT_NAMES[1:]]
-            #keypoints = [anno['keypoints']]
-
             entry = self.data[anno['file_name']]
             entry[0].append(np.array(anno['keypoints']))  # array of x,y
-            entry[1].append(np.array(anno['bbox']))  # cx, cy, w, h
+            entry[1].append(np.array(anno['bbox']))  # cx, cy, w, h for head
             entry[2].append(np.array(is_visible, dtype=np.bool))
             entry[3].append(anno['size'])
-            #is_labeled = np.ones(len(is_visible), dtype=np.bool)
-            #entry[3].append(is_labeled)
+            #entry[4].append(np.array(anno['person']))  # cx, cy, w, h for person
 
         # for encoding
         self.insize = insize
@@ -76,24 +74,22 @@ class KeypointsDataset(Dataset):
     def __getitem__(self, idx):
         fname = self.filename_list[idx]
         img_name = os.path.join(self.root_dir, fname)
-        #image = gray2rgb(io.imread(img_name).astype(np.uint8))
-        #image = gray2rgb(io.imread(img_name))
         image = io.imread(img_name)
         
         # center_x, center_y, visible_coco, width, height
         keypoints = np.array(self.data[fname][0], dtype='float32').reshape(-1,2)
-        bboxes = self.data[fname][1]    # [center_x, center_y , width, height]
+        bboxes = self.data[fname][1]    # [center_x, center_y , width, height] for head
         is_visible = self.data[fname][2]
         size = self.data[fname][3]
+        #people = self.data[fname][4]    # [center_x, center_y , width, height] for person instance
 
-        sample = {'image': image, 'keypoints': keypoints, 'bbox': bboxes, 'is_visible':is_visible, 'size': size, 'name': img_name }
+        #print("is_visible:", is_visible[0].shape)
+        #sample = {'image': image, 'keypoints': keypoints, 'bbox': bboxes, 'is_visible':is_visible, 'size': size, 'name': img_name , 'ppl': people}
+        sample = {'image': image, 'keypoints': keypoints, 'bbox': bboxes, 'is_visible':is_visible, 'size': size, 'name': img_name}
 
-        print("test file name:", self.filename_list[idx])
-        sys.stdout.flush()
-#        print("old keypoints:", sample['keypoints'].shape)
+#        print("test file name:", self.filename_list[idx])
 #        sys.stdout.flush()
           
-        #print("original_keypoints:", sample['keypoints'])
         if self.transform:
             sample = self.transform(sample)
 
@@ -107,6 +103,7 @@ class KeypointsDataset(Dataset):
         bbox = sample['bbox']
         is_visible = sample['is_visible']
         size = sample['size']
+        #people = sample['ppl']
 
         K = len(self.keypoint_names)
 
@@ -120,14 +117,17 @@ class KeypointsDataset(Dataset):
             self.local_grid_size[1], self.local_grid_size[0],
             self.outH, self.outW), dtype=np.float32)
 
+        #for (cx, cy, w, h), (pcx, pcy, pw, ph), points, labeled, parts in zip(bbox, people, keypoints, is_visible, size):
         for (cx, cy, w, h), points, labeled, parts in zip(bbox, keypoints, is_visible, size):
             partsW, partsH = parts, parts
             instanceW, instanceH = w, h
             #partsW, partsH = self.parts_scale * math.sqrt(w * w + h * h)
             #instanceW, instanceH = self.instance_scale * math.sqrt(w * w + h * h)
 
-            points = [torch.tensor([cx.item(), cy.item()])] + list(points)
-
+            #points = [torch.tensor([cx.item(), cy.item()])] + list(points) + [torch.tensor([pcx.item(), pcy.item()])]
+            points = [torch.tensor([cx.item(), cy.item()])] + list(points) 
+            
+            # bbox
             if w > 0 and h > 0:
                 labeled = [True] + list(labeled)
             else:
@@ -161,9 +161,9 @@ class KeypointsDataset(Dataset):
                 jyx = (int(tar_xy[1] / self.gridH) - iyx[0] + self.local_grid_size[1] // 2,
                        int(tar_xy[0] / self.gridW) - iyx[1] + self.local_grid_size[0] // 2)
 
-                if iyx[0] <= 0 or iyx[1] <= 0 or iyx[0] >= self.outH or iyx[1] >= self.outW:
+                if iyx[0] < 0 or iyx[1] < 0 or iyx[0] >= self.outH or iyx[1] >= self.outW:
                     continue
-                if jyx[0] <= 0 or jyx[1] <= 0 or jyx[0] >= self.local_grid_size[1] or jyx[1] >= self.local_grid_size[0]:
+                if jyx[0] < 0 or jyx[1] < 0 or jyx[0] >= self.local_grid_size[1] or jyx[1] >= self.local_grid_size[0]:
                     continue
 
                 te[ei, jyx[0], jyx[1], iyx[0], iyx[1]] = 1
@@ -212,26 +212,14 @@ class KeypointsDataset(Dataset):
         te = torch.from_numpy(te)
         tx_half = torch.from_numpy(tx_half)
         ty_half = torch.from_numpy(ty_half)
+        #vis = torch.FloatTensor(is_visible)
 
-#        deltas.append(torch.from_numpy(delta))
-#        weights.append(torch.from_numpy(weight))
-#        weights_ij.append(torch.from_numpy(weight_ij))
-#        tx_halfs.append(torch.from_numpy(tx_half))
-#        ty_halfs.append(torch.from_numpy(ty_half))
-#
-#        txs.append(torch.from_numpy(tx))
-#        tys.append(torch.from_numpy(ty))
-#        tws.append(torch.from_numpy(tw))
-#        ths.append(torch.from_numpy(th))
-#        tes.append(torch.from_numpy(te))
-
-        #sample = {'image':image, 'delta':delta, 'weight':weight, 'weight_ij':weight_ij, 'tx':tx, 'ty':ty, 'tx_half':tx_half, 'ty_half':ty_half, 'tw':tw, 'th':th, 'te':te  }
-        #sample = [image, delta, weight, weight_ij, tx, ty, tx_half, ty_half, tw, th, te]
         del sample
+        #return [image, delta, weight, weight_ij, tx, ty, tx_half, ty_half, tw, th, te, vis]
         return [image, delta, weight, weight_ij, tx, ty, tx_half, ty_half, tw, th, te]
 
     # Visutalization
-    def show_landmarks(self, img, keypoints, bboxes, fname, idx):
+    def show_landmarks(self, img, keypoints, bboxes,  fname, idx):
         """Show image with keypoints"""
 
         pil_image = Image.fromarray(img.numpy().astype(np.uint8).transpose(1, 2, 0))
@@ -257,11 +245,28 @@ class KeypointsDataset(Dataset):
             drawer.rectangle(xy=[xmin+1, ymin+1, xmax-1, ymax-1],
                              fill=None,
                              outline=COLOR_MAP[KEYPOINT_NAMES[k]])
-        pil_image.save("/media/hci-gpu/hdd/PPN/input_check_0527/"+fname) 
+
+#        for (cx1,cy1,w,h) in people:
+#            k = len(KEYPOINT_NAMES) - 1
+#            xmin = cx1 - w//2
+#            ymin = cy1 - h//2
+#            xmax = cx1 + w//2
+#            ymax = cy1 + h//2
+#
+#            drawer.rectangle(xy=[xmin, ymin, xmax, ymax],
+#                             fill=None,
+#                             outline=COLOR_MAP[KEYPOINT_NAMES[k]])
+#            drawer.rectangle(xy=[xmin+1, ymin+1, xmax-1, ymax-1],
+#                             fill=None,
+#                             outline=COLOR_MAP[KEYPOINT_NAMES[k]])
+
+
+        pil_image.save("/media/hci-gpu/hdd/PPN/input_check/"+fname) 
+
 
 class CustomBatch:
     def __init__(self, datas):
-        # [image, delta, weight, weight_ij, tx, ty, tx_half, ty_half, tw, th, te]
+        # [image, delta, weight, weight_ij, tx, ty, tx_half, ty_half, tw, th, te, is_visible]
         data = list(zip(*datas))
 
         # Stack data 
@@ -276,8 +281,10 @@ class CustomBatch:
         self.tw = torch.stack(data[8], 0)
         self.th = torch.stack(data[9], 0)
         self.te = torch.stack(data[10], 0)
+        # is_visible
+        #self.vis = torch.stack(data[11], 0)
 
-    #    pront("collate_fn_shape: image", image.shape)
+    #    print("collate_fn_shape: image", image.shape)
     #    sys.stdout.flush()
     #    print("delta", delta.shape)
     #    print("max_delta_ij", max_delta_ij.shape)
@@ -299,7 +306,10 @@ class CustomBatch:
         self.ty = self.ty.pin_memory()
         self.tw = self.tw.pin_memory()
         self.th = self.th.pin_memory()
-        self.te = self.te .pin_memory()
+        self.te = self.te.pin_memory()
+
+        # is_visible
+        #self.vis = self.vis.pin_memory()
 
         return self
 

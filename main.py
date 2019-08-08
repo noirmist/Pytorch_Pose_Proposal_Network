@@ -122,6 +122,26 @@ parser.add_argument('--world-size', default=-1, type=int,
 #                         'fastest way to use PyTorch for either single node or '
 #                         'multi node data parallel training')
 
+parser.add_argument('--savefig', action='store_true')
+parser.add_argument('--ldr', '--lambda-resp', default=0.25, type=float,
+                    help='lambda_resp (default: 0.25)',
+                    dest='lambda_resp')
+
+parser.add_argument('--ldi', '--lambda-iou', default=1.0, type=float,
+                    help='lambda_iou (default: 1.0)',
+                    dest='lambda_iou')
+
+parser.add_argument('--lds', '--lambda-size', default=5.0, type=float,
+                    help='lambda_size (default: 5.0)',
+                    dest='lambda_size')
+
+parser.add_argument('--ldc', '--lambda-coor', default=5.0, type=float,
+                    help='lambda_coor (default: 5.0)',
+                    dest='lambda_coor')
+
+parser.add_argument('--ldl', '--lambda-limb', default=0.5, type=float,
+                    help='lambda_limb (default: 0.5)',
+                    dest='lambda_limb')
 
 # Augment implementation
 def area(bbox):
@@ -217,20 +237,51 @@ class PPNLoss(nn.Module):
         (rx, ry), (rw, rh) = self.restore_xy(x, y), self.restore_size(w, h)
         (rtx, rty), (rtw, rth) = self.restore_xy(tx, ty), self.restore_size(tw, th)
         ious = iou((rx, ry, rw, rh), (rtx, rty, rtw, rth))
-        
+
+        # remake Binary cross entrophy function
+        raw_resp_weight = (outH*outW*B-torch.sum(delta).item())/torch.sum(delta).item()
+        resp_weight = torch.autograd.Variable(torch.FloatTensor([1,raw_resp_weight]))
+        resp_weight = resp_weight[delta.long()].cuda()
+	
+        loss_bce = nn.BCELoss(weight = resp_weight)
+
+        #resp_pos_weight = (outH*outW*B-torch.sum(delta).item())/torch.sum(delta).item()
+        #loss_bce = nn.BCEWithLogitsLoss(pos_weight= resp_pos_weight*torch.ones([K, outH, outW]).cuda())
+        #loss_bce = nn.BCEWithLogitsLoss()
+
+
+        #limb_pos_weight = (self.local_grid_size[1]*self.local_grid_size[0]*outH*outW*B-torch.sum(te).item())/torch.sum(te).item()
+
+        #loss_bce_weight_ij = nn.BCEWithLogitsLoss(weight = weight_ij, pos_weight= limb_pos_weight*torch.ones([len(self.edges), self.local_grid_size[1], self.local_grid_size[0], outH, outW]).cuda())
+        #loss_bce_weight_ij = nn.BCEWithLogitsLoss(weight = weight_ij)
+        #loss_bce_weight_ij = nn.BCEWithLogitsLoss()
+        #loss_bce_weight_ij = nn.BCEWithLogitsLoss(pos_weight= limb_pos_weight*torch.ones([len(self.edges), self.local_grid_size[1], self.local_grid_size[0], outH, outW]).cuda())
+
+        raw_limb_weight = (self.local_grid_size[1]*self.local_grid_size[0]*outH*outW*B-torch.sum(te).item())/torch.sum(te).item()
+        limb_weight = torch.autograd.Variable(torch.FloatTensor([1,raw_limb_weight]))
+        limb_weight = limb_weight[te.long()].cuda()
+
+        loss_bce_weight_ij = nn.BCELoss(weight=limb_weight)
+
+        #loss_bce = nn.BCELoss()
+        loss_resp = loss_bce(resp, delta)
+
+        #loss_bce_weight_ij = nn.BCELoss(weight = weight_ij)
+        loss_limb = loss_bce_weight_ij(e, te)
+
         # Original loss function
-        loss_resp = torch.sum((resp - delta)**2, tuple(range(1, resp.dim())) )
+        #loss_resp = torch.sum((resp - delta)**2, tuple(range(1, resp.dim())) )
 
         loss_iou = torch.sum(delta * (conf - ious)**2, tuple(range(1, conf.dim())))
         loss_coor = torch.sum(weight * ((x - tx_half)**2 + (y - ty_half)**2), tuple(range(1, x.dim())))
         loss_size = torch.sum(weight * ((torch.sqrt(w + EPSILON) - torch.sqrt(tw + EPSILON))**2 + (torch.sqrt(h + EPSILON) - torch.sqrt(th + EPSILON))**2 ), tuple(range(1, w.dim())))
-        loss_limb = torch.sum(weight_ij * (e - te)**2, tuple(range(1, e.dim())))
+        #loss_limb = torch.sum(weight_ij * (e - te)**2, tuple(range(1, e.dim())))
 
-        loss_resp = torch.mean(loss_resp)
+        #loss_resp = torch.mean(loss_resp)
         loss_iou = torch.mean(loss_iou)
         loss_coor = torch.mean(loss_coor)
         loss_size = torch.mean(loss_size)
-        loss_limb = torch.mean(loss_limb)
+        #loss_limb = torch.mean(loss_limb)
 
 
         # remake Binary cross entrophy function
@@ -355,11 +406,11 @@ def main():
     # 384 to 512
     insize = (args.image_size, args.image_size)
 
-#    optimizer = torch.optim.SGD(model.parameters(), args.lr,
-#                                momentum=args.momentum,
-#                                weight_decay=args.weight_decay)
+    optimizer = torch.optim.SGD(model.parameters(), args.lr,
+                                momentum=args.momentum,
+                                weight_decay=args.weight_decay)
 
-    optimizer = torch.optim.Adam(model.parameters(), args.lr)
+#    optimizer = torch.optim.Adam(model.parameters(), args.lr)
 
     # Initialize Amp.  Amp accepts either values or strings for the optional override arguments,
     # for convenient interoperation with argparse.
@@ -369,6 +420,7 @@ def main():
                                       keep_batchnorm_fp32= None,
                                       loss_scale=args.loss_scale
                                       )
+        
 
     # For distributed training, wrap the model with apex.parallel.DistributedDataParallel.
     # This must be done AFTER the call to amp.initialize.  If model = DDP(model) is called
@@ -388,11 +440,11 @@ def main():
                 keypoint_names = KEYPOINT_NAMES,
                 local_grid_size = local_grid_size,
                 edges = EDGES,
-                lambda_resp=0.25,
-                lambda_iou=1.0,
-                lambda_coor=5.0,
-                lambda_size=5.0,
-                lambda_limb=0.5
+                lambda_resp= args.lambda_resp,
+                lambda_iou= args.lambda_iou,
+                lambda_coor= args.lambda_coor,
+                lambda_size= args.lambda_size,
+                lambda_limb= args.lambda_limb
             ).cuda()
     '''
                 lambda_resp=0.25,
@@ -496,29 +548,9 @@ def main():
         sampler=val_sampler)
 
     if args.evaluate:
-#        val_dataset = KeypointsDataset(json_file = args.val_file, root_dir = args.root_dir,
-#                    transform=transforms.Compose([
-#                        IAA(insize,'test'),
-#                        ToTensor()
-#                    ]), draw=False,
-#                    insize = insize,
-#                    outsize = outsize, 
-#                    keypoint_names = KEYPOINT_NAMES ,
-#                    local_grid_size = local_grid_size,
-#                    edges = EDGES
-#                    )
-#
-#        val_loader = torch.utils.data.DataLoader(
-#            val_dataset,
-#            batch_size=args.batch_size, shuffle=False,
-#            num_workers=args.workers, 
-#            collate_fn = custom_collate_fn, 
-#            pin_memory = True,
-#            sampler = None)
 
-
-        #test_output(val_loader, model, criterion, 1, outsize, local_grid_size, args)
-        test_output(train_loader, model, criterion, 1, outsize, local_grid_size, args)
+        #test_output(val_loader, val_dataset, model, criterion, 1, outsize, local_grid_size, args)
+        test_output(train_loader, train_dataset, model, criterion, 1, outsize, local_grid_size, args)
         return
 
     # Start trainin iterations
@@ -526,15 +558,14 @@ def main():
         if args.distributed:
             train_sampler.set_epoch(epoch)
 
-        #adjust_learning_rate(optimizer, epoch, args)
+        #TODO uncommect lr and evaluation code
+        adjust_learning_rate(optimizer, epoch, args)
 
         # train for one epoch
         train_epoch_loss = train(train_loader, model, criterion, optimizer, epoch, args)
 
-
         # evaluate on validation set
-        # epoch_loss = validate(val_loader, model, criterion, epoch, args)
-
+        #epoch_loss = validate(val_loader, model, criterion, epoch, args)
 
         # remember best acc@1 and save checkpoint
         if args.local_rank == 0:
@@ -543,8 +574,8 @@ def main():
             #plotter.plot('loss', 'val', 'PPN Loss', epoch+1, epoch_loss) 
 
             #is_best = epoch_loss < best_loss
-            is_best = False
-            #best_loss = min(epoch_loss, best_loss)
+            is_best = train_epoch_loss < best_loss
+            best_loss = min(train_epoch_loss, best_loss)
 
             print("checkpoints checking")
             save_checkpoint({
@@ -554,6 +585,7 @@ def main():
                 'best_loss': best_loss,
                 'optimizer' : optimizer.state_dict(),
             }, is_best, epoch+1, args.save)
+
 
 class test_data_prefetcher():
     def __init__(self, loader):
@@ -621,7 +653,6 @@ class test_data_prefetcher():
 
         self.preload()
         return input, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te, raw
-
 
 
 class data_prefetcher():
@@ -700,14 +731,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     model.train()
 
     end = time.time()
-    #prefetcher = data_prefetcher(train_loader)
 
-#    img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
-#    i = 0
-#    while img is not None:
-#        i += 1 
-#
-    #for i, (img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te) in enumerate(train_loader):
     for i, samples in enumerate(train_loader):
         # measure data loading time
         img = samples.image.cuda()
@@ -729,7 +753,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         loss, loss_resp, loss_iou, loss_coor, loss_size, loss_limb = criterion(
                 img, output, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te)
 
-        # compute gradient and do SGD step
+        # compute gradient and do step
         optimizer.zero_grad()
         if args.distributed:
             with amp.scale_loss(loss, optimizer) as scaled_loss:
@@ -738,7 +762,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
             loss.backward()
         optimizer.step()
 
-        if i % args.print_freq == 0:
+        if i % args.print_freq == 0 or i == len(train_loader)-1:
 
             #TODO  Measure accuracy parts
             if args.distributed:
@@ -797,14 +821,86 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                 temp_tw = tw.cpu().numpy()
                 temp_th = th.cpu().numpy()
 
-                if i % args.print_freq == 0 :
-                    print("Trn max delta 0 value:"+str(temp_delta[0,0,:,:].reshape(-1)[np.argsort(temp_delta[0,0,:,:].reshape(-1))[-7:]]))
-                    print("Trn max resp 0 value:"+str(resp[0,0,:,:].reshape(-1)[np.argsort(resp[0,0,:,:].reshape(-1))[-7:]]))
+                if i % args.print_freq == 0 or i == len(train_loader)-1:
+                    #print("Trn 1 resp: ", resp[np.where(temp_delta == 1.0)])
 
-                    print("Trn max w 0 value:"+str(temp_tw[0,0,:,:].reshape(-1)[np.argsort(temp_tw[0,0,:,:].reshape(-1))[-7:]]))
-                    print("Trn max tw 0 value:"+str(w[0,0,:,:].reshape(-1)[np.argsort(w[0,0,:,:].reshape(-1))[-7:]]))
-                    print("Trn max h 0 value:"+str(temp_th[0,0,:,:].reshape(-1)[np.argsort(temp_th[0,0,:,:].reshape(-1))[-7:]]))
-                    print("Trn max th 0 value:"+str(h[0,0,:,:].reshape(-1)[np.argsort(h[0,0,:,:].reshape(-1))[-7:]]))
+                    head_resp = resp[:,0,:,:]
+                    print("Trn head exist resp:\t\t Max(", head_resp[np.where(temp_delta[:,0,:,:] == 1.0)].max(), "),\tMin(", head_resp[np.where(temp_delta[:,0,:,:] == 1.0)].min(),"),\tMean(",  head_resp[np.where(temp_delta[:,0,:,:] == 1.0)].mean(), ")")
+                    print("Trn head non-exist resp:\t Max(", head_resp[np.where(temp_delta[:,0,:,:] == 0.0)].max(), "),\tMin(", head_resp[np.where(temp_delta[:,0,:,:] == 0.0)].min(),"),\tMean(",  head_resp[np.where(temp_delta[:,0,:,:] == 0.0)].mean(), ")")
+
+                    ls_resp = resp[:,1,:,:]
+                    print("Trn left_shoulder exist resp:\t Max(", ls_resp[np.where(temp_delta[:,1,:,:] == 1.0)].max(), "),\tMin(", ls_resp[np.where(temp_delta[:,1,:,:] == 1.0)].min(),"),\tMean(",  ls_resp[np.where(temp_delta[:,1,:,:] == 1.0)].mean(), ")")
+                    print("Trn left_shldr non-exist resp:\t Max(", ls_resp[np.where(temp_delta[:,1,:,:] == 0.0)].max(), "),\tMin(", ls_resp[np.where(temp_delta[:,1,:,:] == 0.0)].min(),"),\tMean(",  ls_resp[np.where(temp_delta[:,1,:,:] == 0.0)].mean(), ")")
+
+
+                    rs_resp = resp[:,2,:,:]
+                    print("Trn right_shoulder exist resp:\t Max(", rs_resp[np.where(temp_delta[:,2,:,:] == 1.0)].max(), "),\tMin(", rs_resp[np.where(temp_delta[:,2,:,:] == 1.0)].min(),"),\tMean(",  rs_resp[np.where(temp_delta[:,2,:,:] == 1.0)].mean(), ")")
+                    print("Trn right_shldr non-exist resp:\t Max(", rs_resp[np.where(temp_delta[:,2,:,:] == 0.0)].max(), "),\tMin(", rs_resp[np.where(temp_delta[:,2,:,:] == 0.0)].min(),"),\tMean(",  rs_resp[np.where(temp_delta[:,2,:,:] == 0.0)].mean(), ")")
+
+                    le_resp = resp[:,3,:,:]
+                    print("Trn left_elbow exist resp:\t Max(", le_resp[np.where(temp_delta[:,3,:,:] == 1.0)].max(), "),\tMin(", le_resp[np.where(temp_delta[:,3,:,:] == 1.0)].min(),"),\tMean(",  le_resp[np.where(temp_delta[:,3,:,:] == 1.0)].mean(), ")")
+                    print("Trn left_elbow non-exist resp:\t Max(", le_resp[np.where(temp_delta[:,3,:,:] == 0.0)].max(), "),\tMin(", le_resp[np.where(temp_delta[:,3,:,:] == 0.0)].min(),"),\tMean(",  le_resp[np.where(temp_delta[:,3,:,:] == 0.0)].mean(), ")")
+
+                    re_resp = resp[:,4,:,:]
+                    print("Trn right_elbow exist resp:\t Max(", re_resp[np.where(temp_delta[:,4,:,:] == 1.0)].max(), "),\tMin(", re_resp[np.where(temp_delta[:,4,:,:] == 1.0)].min(),"),\tMean(",  re_resp[np.where(temp_delta[:,4,:,:] == 1.0)].mean(), ")")
+                    print("Trn right_elbow non-exist resp:\t Max(", re_resp[np.where(temp_delta[:,4,:,:] == 0.0)].max(), "),\tMin(", re_resp[np.where(temp_delta[:,4,:,:] == 0.0)].min(),"),\tMean(",  re_resp[np.where(temp_delta[:,4,:,:] == 0.0)].mean(), ")")
+
+                    lw_resp = resp[:,5,:,:]
+                    print("Trn left_wrist exist resp:\t Max(", lw_resp[np.where(temp_delta[:,5,:,:] == 1.0)].max(), "),\tMin(", lw_resp[np.where(temp_delta[:,5,:,:] == 1.0)].min(),"),\tMean(",  lw_resp[np.where(temp_delta[:,5,:,:] == 1.0)].mean(), ")")
+                    print("Trn left_wrist non-exist resp:\t Max(", lw_resp[np.where(temp_delta[:,5,:,:] == 0.0)].max(), "),\tMin(", lw_resp[np.where(temp_delta[:,5,:,:] == 0.0)].min(),"),\tMean(",  lw_resp[np.where(temp_delta[:,5,:,:] == 0.0)].mean(), ")")
+
+                    rw_resp = resp[:,6,:,:]
+                    print("Trn right_wrist exist resp:\t Max(", rw_resp[np.where(temp_delta[:,6,:,:] == 1.0)].max(), "),\tMin(", rw_resp[np.where(temp_delta[:,6,:,:] == 1.0)].min(),"),\tMean(",  rw_resp[np.where(temp_delta[:,6,:,:] == 1.0)].mean(), ")")
+                    print("Trn right_wrist non-exist resp:\t Max(", rw_resp[np.where(temp_delta[:,6,:,:] == 0.0)].max(), "),\tMin(", rw_resp[np.where(temp_delta[:,6,:,:] == 0.0)].min(),"),\tMean(",  rw_resp[np.where(temp_delta[:,6,:,:] == 0.0)].mean(), ")")
+
+                    lh_resp = resp[:,7,:,:]
+                    print("Trn left_hip exist resp:\t Max(", lh_resp[np.where(temp_delta[:,7,:,:] == 1.0)].max(), "),\tMin(", lh_resp[np.where(temp_delta[:,7,:,:] == 1.0)].min(),"),\tMean(",  lh_resp[np.where(temp_delta[:,7,:,:] == 1.0)].mean(), ")")
+                    print("Trn left_hip non-exist resp:\t Max(", lh_resp[np.where(temp_delta[:,7,:,:] == 0.0)].max(), "),\tMin(", lh_resp[np.where(temp_delta[:,7,:,:] == 0.0)].min(),"),\tMean(",  lh_resp[np.where(temp_delta[:,7,:,:] == 0.0)].mean(), ")")
+
+                    rh_resp = resp[:,8,:,:]
+                    print("Trn right_hip exist resp:\t Max(", rh_resp[np.where(temp_delta[:,8,:,:] == 1.0)].max(), "),\tMin(", rh_resp[np.where(temp_delta[:,8,:,:] == 1.0)].min(),"),\tMean(",  rh_resp[np.where(temp_delta[:,8,:,:] == 1.0)].mean(), ")")
+                    print("Trn right_hip non-exist resp:\t Max(", rh_resp[np.where(temp_delta[:,8,:,:] == 0.0)].max(), "),\tMin(", rh_resp[np.where(temp_delta[:,8,:,:] == 0.0)].min(),"),\tMean(",  rh_resp[np.where(temp_delta[:,8,:,:] == 0.0)].mean(), ")")
+
+                    lk_resp = resp[:,9,:,:]
+                    print("Trn left_knee exist resp:\t Max(", lk_resp[np.where(temp_delta[:,9,:,:] == 1.0)].max(), "),\tMin(", lk_resp[np.where(temp_delta[:,9,:,:] == 1.0)].min(),"),\tMean(",  lk_resp[np.where(temp_delta[:,9,:,:] == 1.0)].mean(), ")")
+                    print("Trn left_knee non-exist resp:\t Max(", lk_resp[np.where(temp_delta[:,9,:,:] == 0.0)].max(), "),\tMin(", lk_resp[np.where(temp_delta[:,9,:,:] == 0.0)].min(),"),\tMean(",  lk_resp[np.where(temp_delta[:,9,:,:] == 0.0)].mean(), ")")
+
+                    rk_resp = resp[:,10,:,:]
+                    print("Trn right_knee exist resp:\t Max(", rk_resp[np.where(temp_delta[:,10,:,:] == 1.0)].max(), "),\tMin(", rk_resp[np.where(temp_delta[:,10,:,:] == 1.0)].min(),"),\tMean(",  rk_resp[np.where(temp_delta[:,10,:,:] == 1.0)].mean(), ")")
+                    print("Trn right_knee non-exist resp:\t Max(", rk_resp[np.where(temp_delta[:,10,:,:] == 0.0)].max(), "),\tMin(", rk_resp[np.where(temp_delta[:,10,:,:] == 0.0)].min(),"),\tMean(",  rk_resp[np.where(temp_delta[:,10,:,:] == 0.0)].mean(), ")")
+
+                    la_resp = resp[:,11,:,:]
+                    print("Trn left_ankle exist resp:\t Max(", la_resp[np.where(temp_delta[:,11,:,:] == 1.0)].max(), "),\tMin(", la_resp[np.where(temp_delta[:,11,:,:] == 1.0)].min(),"),\tMean(",  la_resp[np.where(temp_delta[:,11,:,:] == 1.0)].mean(), ")")
+                    print("Trn left_ankle non-exist resp:\t Max(", la_resp[np.where(temp_delta[:,11,:,:] == 0.0)].max(), "),\tMin(", la_resp[np.where(temp_delta[:,11,:,:] == 0.0)].min(),"),\tMean(",  la_resp[np.where(temp_delta[:,11,:,:] == 0.0)].mean(), ")")
+
+                    ra_resp = resp[:,12,:,:]
+                    print("Trn right_ankle exist resp:\t Max(", ra_resp[np.where(temp_delta[:,12,:,:] == 1.0)].max(), "),\tMin(", ra_resp[np.where(temp_delta[:,12,:,:] == 1.0)].min(),"),\tMean(",  ra_resp[np.where(temp_delta[:,12,:,:] == 1.0)].mean(), ")")
+                    print("Trn right_ankle non-exist resp:\t Max(", ra_resp[np.where(temp_delta[:,12,:,:] == 0.0)].max(), "),\tMin(", ra_resp[np.where(temp_delta[:,12,:,:] == 0.0)].min(),"),\tMean(",  ra_resp[np.where(temp_delta[:,12,:,:] == 0.0)].mean(), ")")
+
+                    thorax_resp = resp[:,13,:,:]
+                    print("Trn thorax exist resp:\t\t Max(", thorax_resp[np.where(temp_delta[:,13,:,:] == 1.0)].max(), "),\tMin(", thorax_resp[np.where(temp_delta[:,13,:,:] == 1.0)].min(),"),\tMean(",  thorax_resp[np.where(temp_delta[:,13,:,:] == 1.0)].mean(), ")")
+                    print("Trn thorax non-exist resp:\t Max(", thorax_resp[np.where(temp_delta[:,13,:,:] == 0.0)].max(), "),\tMin(", thorax_resp[np.where(temp_delta[:,13,:,:] == 0.0)].min(),"),\tMean(",  thorax_resp[np.where(temp_delta[:,13,:,:] == 0.0)].mean(), ")")
+
+                    pelvis_resp = resp[:,14,:,:]
+                    print("Trn pelvis exist resp:\t\t Max(", pelvis_resp[np.where(temp_delta[:,14,:,:] == 1.0)].max(), "),\tMin(", pelvis_resp[np.where(temp_delta[:,14,:,:] == 1.0)].min(),"),\tMean(",  pelvis_resp[np.where(temp_delta[:,14,:,:] == 1.0)].mean(), ")")
+                    print("Trn pelvis non-exist resp:\t Max(", pelvis_resp[np.where(temp_delta[:,14,:,:] == 0.0)].max(), "),\tMin(", pelvis_resp[np.where(temp_delta[:,14,:,:] == 0.0)].min(),"),\tMean(",  pelvis_resp[np.where(temp_delta[:,14,:,:] == 0.0)].mean(), ")")
+
+                    neck_resp = resp[:,15,:,:]
+                    print("Trn neck exist resp:\t\t Max(", neck_resp[np.where(temp_delta[:,15,:,:] == 1.0)].max(), "),\tMin(", neck_resp[np.where(temp_delta[:,15,:,:] == 1.0)].min(),"),\tMean(",  neck_resp[np.where(temp_delta[:,15,:,:] == 1.0)].mean(), ")")
+                    print("Trn neck non-exist resp:\t Max(", neck_resp[np.where(temp_delta[:,15,:,:] == 0.0)].max(), "),\tMin(", neck_resp[np.where(temp_delta[:,15,:,:] == 0.0)].min(),"),\tMean(",  neck_resp[np.where(temp_delta[:,15,:,:] == 0.0)].mean(), ")")
+
+                    top_resp = resp[:,16,:,:]
+                    print("Trn top exist resp:\t\t Max(", top_resp[np.where(temp_delta[:,16,:,:] == 1.0)].max(), "),\tMin(", top_resp[np.where(temp_delta[:,16,:,:] == 1.0)].min(),"),\tMean(",  top_resp[np.where(temp_delta[:,16,:,:] == 1.0)].mean(), ")")
+                    print("Trn top non-exist resp:\t\t Max(", top_resp[np.where(temp_delta[:,16,:,:] == 0.0)].max(), "),\tMin(", top_resp[np.where(temp_delta[:,16,:,:] == 0.0)].min(),"),\tMean(",  top_resp[np.where(temp_delta[:,16,:,:] == 0.0)].mean(), ")")
+
+                    stomach_resp = resp[:,17,:,:]
+                    print("Trn stomach exist resp:\t\t Max(", stomach_resp[np.where(temp_delta[:,17,:,:] == 1.0)].max(), "),\tMin(", stomach_resp[np.where(temp_delta[:,17,:,:] == 1.0)].min(),"),\tMean(",  stomach_resp[np.where(temp_delta[:,17,:,:] == 1.0)].mean(), ")")
+                    print("Trn stomach non-exist resp:\t Max(", stomach_resp[np.where(temp_delta[:,17,:,:] == 0.0)].max(), "),\tMin(", stomach_resp[np.where(temp_delta[:,17,:,:] == 0.0)].min(),"),\tMean(",  stomach_resp[np.where(temp_delta[:,17,:,:] == 0.0)].mean(), ")")
+
+#                    print("Trn max w 0 value:"+str(temp_tw[0,0,:,:].reshape(-1)[np.argsort(temp_tw[0,0,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max tw 0 value:"+str(w[0,0,:,:].reshape(-1)[np.argsort(w[0,0,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max h 0 value:"+str(temp_th[0,0,:,:].reshape(-1)[np.argsort(temp_th[0,0,:,:].reshape(-1))[-7:]]))
+#                    print("Trn max th 0 value:"+str(h[0,0,:,:].reshape(-1)[np.argsort(h[0,0,:,:].reshape(-1))[-7:]]))
 
 #                    print("Trn max delta 1 value:"+str(temp_delta[0,1,:,:].reshape(-1)[np.argsort(temp_delta[0,1,:,:].reshape(-1))[-7:]]))
 #                    print("Trn max resp 1 value:"+str(resp[0,1,:,:].reshape(-1)[np.argsort(resp[0,1,:,:].reshape(-1))[-7:]]))
@@ -849,8 +945,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                     epoch+1, i, len(train_loader), learning_rate=get_lr(optimizer), batch_time=batch_time,
                     loss=losses, loss_resp=losses_resp, loss_iou=losses_iou, loss_coor=losses_coor, loss_size=losses_size, loss_limb=losses_limb))
                 sys.stdout.flush()
-                plotter.plot('loss', 'train', 'PPN Loss', epoch + (i/len(train_loader)), losses.avg) 
-
+                plotter.plot('loss', 'train', 'PPN Loss', epoch + (i/len(train_loader)), losses.val) 
         del output
         del loss
         del loss_resp
@@ -861,16 +956,15 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
 
         #img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
 
-    return losses.avg
+    return losses.val
 
 #TODO function for evaluation like OKS
 
-def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, args):
-    from datatest import get_humans_by_feature
-    from datatest import draw_humans
+def test_output(val_loader, val_dataset, model, criterion, epoch, outsize, local_grid_size, args):
+    from datatest import get_humans_by_feature, draw_humans, show_sample, evaluation
+    # Process with one batch
     data_time = AverageMeter()
 
-    end = time.time()
     # revert normalized image to original image
     mean = torch.tensor([0.485 , 0.456 , 0.406 ]).cuda().view(1,3,1,1)
     std = torch.tensor([0.229 , 0.224 , 0.225 ]).cuda().view(1,3,1,1)
@@ -879,13 +973,8 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
     model.eval()
     outW, outH = outsize
 
-#    prefetcher = data_prefetcher(val_loader)
-#    img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
-#    i = 0
-#    while img is not None:
-#        i += 1
-#        # compute output
-#        with torch.no_grad():
+    ## pck_object: fname, gt_KPs、 gt_bboxs, humans(pred_KPs, pred_bboxs), scores, is_visible, size
+    pck_object = [[], [], [], [], [], [], []] 
 
     with torch.no_grad():
         end=time.time()
@@ -921,7 +1010,6 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
 
             logger.info("resp loss:"+str(reduced_loss_resp))
 
-
             K = len(KEYPOINT_NAMES)
             B, _, _, _ = img.shape
 
@@ -939,11 +1027,6 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
                 outH, outW
             ).cpu().numpy()
 
-            logger.info("Non-Zero GT: "+str(np.count_nonzero(delta.cpu().numpy()[0])))
-            #logger.info("Non-Zero GT1: "+str(np.count_nonzero(delta.cpu().numpy()[0][1])))
-            logger.info("resp dim:"+str(resp.shape))
-            #logger.info("resp value:"+str(resp[0]))
-
             resp = np.squeeze(resp, axis=0)
             conf = np.squeeze(conf, axis=0)
             x = np.squeeze(x, axis=0)
@@ -952,47 +1035,157 @@ def test_output(val_loader, model, criterion, epoch, outsize, local_grid_size, a
             h = np.squeeze(h, axis=0)
             e = np.squeeze(e, axis=0)
 
-            logger.info("max human resp value:"+str(np.amax(resp[0])))
-            logger.info("max 1 resp value:"+str(np.amax(resp[1])))
-            logger.info("max 2 resp value:"+str(np.amax(resp[2])))
-            logger.info("max 3 resp value:"+str(np.amax(resp[3])))
-            logger.info("max 4 resp value:"+str(np.amax(resp[4])))
-            logger.info("max 5 resp value:"+str(np.amax(resp[5])))
-            logger.info("max 6 resp value:"+str(np.amax(resp[6])))
-            logger.info("max 7 resp value:"+str(np.amax(resp[7])))
-            logger.info("max 8 resp value:"+str(np.amax(resp[8])))
-            logger.info("max 9 resp value:"+str(np.amax(resp[9])))
-            logger.info("max 10 resp value:"+str(np.amax(resp[10])))
-            logger.info("max 11 resp value:"+str(np.amax(resp[11])))
-            logger.info("max 12 resp value:"+str(np.amax(resp[12])))
-            logger.info("max 13 resp value:"+str(np.amax(resp[13])))
-            logger.info("max 14 resp value:"+str(np.amax(resp[14])))
-            logger.info("max 15 resp value:"+str(np.amax(resp[15])))
-            logger.info("max 16 resp value:"+str(np.amax(resp[16])))
-            logger.info("max conf value:"+str(np.amax(conf[0])))
-            #delta = resp*conf
+            resp = resp * conf
+
+            delta = delta.cpu().numpy()
+
+
+            head_resp = resp[0,:,:]
+            print("Trn head exist resp:\t\t Max(", head_resp[np.where(delta[0,0,:,:] == 1.0)].max(), "),\tMin(", head_resp[np.where(delta[0,0,:,:] == 1.0)].min(),"),\tMean(",  head_resp[np.where(delta[0,0,:,:] == 1.0)].mean(), ")")
+            print("Trn head non-exist resp:\t Max(", head_resp[np.where(delta[0,0,:,:] == 0.0)].max(), "),\tMin(", head_resp[np.where(delta[0,0,:,:] == 0.0)].min(),"),\tMean(",  head_resp[np.where(delta[0,0,:,:] == 0.0)].mean(), ")")
+
+            ls_resp = resp[1,:,:]
+            print("Trn left_shoulder exist resp:\t Max(", ls_resp[np.where(delta[0,1,:,:] == 1.0)].max(), "),\tMin(", ls_resp[np.where(delta[0,1,:,:] == 1.0)].min(),"),\tMean(",  ls_resp[np.where(delta[0,1,:,:] == 1.0)].mean(), ")")
+            print("Trn left_shldr non-exist resp:\t Max(", ls_resp[np.where(delta[0,1,:,:] == 0.0)].max(), "),\tMin(", ls_resp[np.where(delta[0,1,:,:] == 0.0)].min(),"),\tMean(",  ls_resp[np.where(delta[0,1,:,:] == 0.0)].mean(), ")")
+
+
+            rs_resp = resp[2,:,:]
+            print("Trn right_shoulder exist resp:\t Max(", rs_resp[np.where(delta[0,2,:,:] == 1.0)].max(), "),\tMin(", rs_resp[np.where(delta[0,2,:,:] == 1.0)].min(),"),\tMean(",  rs_resp[np.where(delta[0,2,:,:] == 1.0)].mean(), ")")
+            print("Trn right_shldr non-exist resp:\t Max(", rs_resp[np.where(delta[0,2,:,:] == 0.0)].max(), "),\tMin(", rs_resp[np.where(delta[0,2,:,:] == 0.0)].min(),"),\tMean(",  rs_resp[np.where(delta[0,2,:,:] == 0.0)].mean(), ")")
+
+            le_resp = resp[3,:,:]
+            print("Trn left_elbow exist resp:\t Max(", le_resp[np.where(delta[0,3,:,:] == 1.0)].max(), "),\tMin(", le_resp[np.where(delta[0,3,:,:] == 1.0)].min(),"),\tMean(",  le_resp[np.where(delta[0,3,:,:] == 1.0)].mean(), ")")
+            print("Trn left_elbow non-exist resp:\t Max(", le_resp[np.where(delta[0,3,:,:] == 0.0)].max(), "),\tMin(", le_resp[np.where(delta[0,3,:,:] == 0.0)].min(),"),\tMean(",  le_resp[np.where(delta[0,3,:,:] == 0.0)].mean(), ")")
+
+            re_resp = resp[4,:,:]
+            print("Trn right_elbow exist resp:\t Max(", re_resp[np.where(delta[0,4,:,:] == 1.0)].max(), "),\tMin(", re_resp[np.where(delta[0,4,:,:] == 1.0)].min(),"),\tMean(",  re_resp[np.where(delta[0,4,:,:] == 1.0)].mean(), ")")
+            print("Trn right_elbow non-exist resp:\t Max(", re_resp[np.where(delta[0,4,:,:] == 0.0)].max(), "),\tMin(", re_resp[np.where(delta[0,4,:,:] == 0.0)].min(),"),\tMean(",  re_resp[np.where(delta[0,4,:,:] == 0.0)].mean(), ")")
+
+            lw_resp = resp[5,:,:]
+            print("Trn left_wrist exist resp:\t Max(", lw_resp[np.where(delta[0,5,:,:] == 1.0)].max(), "),\tMin(", lw_resp[np.where(delta[0,5,:,:] == 1.0)].min(),"),\tMean(",  lw_resp[np.where(delta[0,5,:,:] == 1.0)].mean(), ")")
+            print("Trn left_wrist non-exist resp:\t Max(", lw_resp[np.where(delta[0,5,:,:] == 0.0)].max(), "),\tMin(", lw_resp[np.where(delta[0,5,:,:] == 0.0)].min(),"),\tMean(",  lw_resp[np.where(delta[0,5,:,:] == 0.0)].mean(), ")")
+
+            rw_resp = resp[6,:,:]
+            print("Trn right_wrist exist resp:\t Max(", rw_resp[np.where(delta[0,6,:,:] == 1.0)].max(), "),\tMin(", rw_resp[np.where(delta[0,6,:,:] == 1.0)].min(),"),\tMean(",  rw_resp[np.where(delta[0,6,:,:] == 1.0)].mean(), ")")
+            print("Trn right_wrist non-exist resp:\t Max(", rw_resp[np.where(delta[0,6,:,:] == 0.0)].max(), "),\tMin(", rw_resp[np.where(delta[0,6,:,:] == 0.0)].min(),"),\tMean(",  rw_resp[np.where(delta[0,6,:,:] == 0.0)].mean(), ")")
+
+            lh_resp = resp[7,:,:]
+            print("Trn left_hip exist resp:\t Max(", lh_resp[np.where(delta[0,7,:,:] == 1.0)].max(), "),\tMin(", lh_resp[np.where(delta[0,7,:,:] == 1.0)].min(),"),\tMean(",  lh_resp[np.where(delta[0,7,:,:] == 1.0)].mean(), ")")
+            print("Trn left_hip non-exist resp:\t Max(", lh_resp[np.where(delta[0,7,:,:] == 0.0)].max(), "),\tMin(", lh_resp[np.where(delta[0,7,:,:] == 0.0)].min(),"),\tMean(",  lh_resp[np.where(delta[0,7,:,:] == 0.0)].mean(), ")")
+
+            rh_resp = resp[8,:,:]
+            print("Trn right_hip exist resp:\t Max(", rh_resp[np.where(delta[0,8,:,:] == 1.0)].max(), "),\tMin(", rh_resp[np.where(delta[0,8,:,:] == 1.0)].min(),"),\tMean(",  rh_resp[np.where(delta[0,8,:,:] == 1.0)].mean(), ")")
+            print("Trn right_hip non-exist resp:\t Max(", rh_resp[np.where(delta[0,8,:,:] == 0.0)].max(), "),\tMin(", rh_resp[np.where(delta[0,8,:,:] == 0.0)].min(),"),\tMean(",  rh_resp[np.where(delta[0,8,:,:] == 0.0)].mean(), ")")
+
+            lk_resp = resp[9,:,:]
+            print("Trn left_knee exist resp:\t Max(", lk_resp[np.where(delta[0,9,:,:] == 1.0)].max(), "),\tMin(", lk_resp[np.where(delta[0,9,:,:] == 1.0)].min(),"),\tMean(",  lk_resp[np.where(delta[0,9,:,:] == 1.0)].mean(), ")")
+            print("Trn left_knee non-exist resp:\t Max(", lk_resp[np.where(delta[0,9,:,:] == 0.0)].max(), "),\tMin(", lk_resp[np.where(delta[0,9,:,:] == 0.0)].min(),"),\tMean(",  lk_resp[np.where(delta[0,9,:,:] == 0.0)].mean(), ")")
+
+            rk_resp = resp[10,:,:]
+            print("Trn right_knee exist resp:\t Max(", rk_resp[np.where(delta[0,10,:,:] == 1.0)].max(), "),\tMin(", rk_resp[np.where(delta[0,10,:,:] == 1.0)].min(),"),\tMean(",  rk_resp[np.where(delta[0,10,:,:] == 1.0)].mean(), ")")
+            print("Trn right_knee non-exist resp:\t Max(", rk_resp[np.where(delta[0,10,:,:] == 0.0)].max(), "),\tMin(", rk_resp[np.where(delta[0,10,:,:] == 0.0)].min(),"),\tMean(",  rk_resp[np.where(delta[0,10,:,:] == 0.0)].mean(), ")")
+
+            la_resp = resp[11,:,:]
+            print("Trn left_ankle exist resp:\t Max(", la_resp[np.where(delta[0,11,:,:] == 1.0)].max(), "),\tMin(", la_resp[np.where(delta[0,11,:,:] == 1.0)].min(),"),\tMean(",  la_resp[np.where(delta[0,11,:,:] == 1.0)].mean(), ")")
+            print("Trn left_ankle non-exist resp:\t Max(", la_resp[np.where(delta[0,11,:,:] == 0.0)].max(), "),\tMin(", la_resp[np.where(delta[0,11,:,:] == 0.0)].min(),"),\tMean(",  la_resp[np.where(delta[0,11,:,:] == 0.0)].mean(), ")")
+
+            ra_resp = resp[12,:,:]
+            print("Trn right_ankle exist resp:\t Max(", ra_resp[np.where(delta[0,12,:,:] == 1.0)].max(), "),\tMin(", ra_resp[np.where(delta[0,12,:,:] == 1.0)].min(),"),\tMean(",  ra_resp[np.where(delta[0,12,:,:] == 1.0)].mean(), ")")
+            print("Trn right_ankle non-exist resp:\t Max(", ra_resp[np.where(delta[0,12,:,:] == 0.0)].max(), "),\tMin(", ra_resp[np.where(delta[0,12,:,:] == 0.0)].min(),"),\tMean(",  ra_resp[np.where(delta[0,12,:,:] == 0.0)].mean(), ")")
+
+            thorax_resp = resp[13,:,:]
+            print("Trn thorax exist resp:\t\t Max(", thorax_resp[np.where(delta[0,13,:,:] == 1.0)].max(), "),\tMin(", thorax_resp[np.where(delta[0,13,:,:] == 1.0)].min(),"),\tMean(",  thorax_resp[np.where(delta[0,13,:,:] == 1.0)].mean(), ")")
+            print("Trn thorax non-exist resp:\t Max(", thorax_resp[np.where(delta[0,13,:,:] == 0.0)].max(), "),\tMin(", thorax_resp[np.where(delta[0,13,:,:] == 0.0)].min(),"),\tMean(",  thorax_resp[np.where(delta[0,13,:,:] == 0.0)].mean(), ")")
+
+            pelvis_resp = resp[14,:,:]
+            print("Trn pelvis exist resp:\t\t Max(", pelvis_resp[np.where(delta[0,14,:,:] == 1.0)].max(), "),\tMin(", pelvis_resp[np.where(delta[0,14,:,:] == 1.0)].min(),"),\tMean(",  pelvis_resp[np.where(delta[0,14,:,:] == 1.0)].mean(), ")")
+            print("Trn pelvis non-exist resp:\t Max(", pelvis_resp[np.where(delta[0,14,:,:] == 0.0)].max(), "),\tMin(", pelvis_resp[np.where(delta[0,14,:,:] == 0.0)].min(),"),\tMean(",  pelvis_resp[np.where(delta[0,14,:,:] == 0.0)].mean(), ")")
+
+            neck_resp = resp[15,:,:]
+            print("Trn neck exist resp:\t\t Max(", neck_resp[np.where(delta[0,15,:,:] == 1.0)].max(), "),\tMin(", neck_resp[np.where(delta[0,15,:,:] == 1.0)].min(),"),\tMean(",  neck_resp[np.where(delta[0,15,:,:] == 1.0)].mean(), ")")
+            print("Trn neck non-exist resp:\t Max(", neck_resp[np.where(delta[0,15,:,:] == 0.0)].max(), "),\tMin(", neck_resp[np.where(delta[0,15,:,:] == 0.0)].min(),"),\tMean(",  neck_resp[np.where(delta[0,15,:,:] == 0.0)].mean(), ")")
+
+            top_resp = resp[16,:,:]
+            print("Trn top exist resp:\t\t Max(", top_resp[np.where(delta[0,16,:,:] == 1.0)].max(), "),\tMin(", top_resp[np.where(delta[0,16,:,:] == 1.0)].min(),"),\tMean(",  top_resp[np.where(delta[0,16,:,:] == 1.0)].mean(), ")")
+            print("Trn top non-exist resp:\t\t Max(", top_resp[np.where(delta[0,16,:,:] == 0.0)].max(), "),\tMin(", top_resp[np.where(delta[0,16,:,:] == 0.0)].min(),"),\tMean(",  top_resp[np.where(delta[0,16,:,:] == 0.0)].mean(), ")")
+
+            stomach_resp = resp[17,:,:]
+            print("Trn stomach exist resp:\t\t Max(", stomach_resp[np.where(delta[0,17,:,:] == 1.0)].max(), "),\tMin(", stomach_resp[np.where(delta[0,17,:,:] == 1.0)].min(),"),\tMean(",  stomach_resp[np.where(delta[0,17,:,:] == 1.0)].mean(), ")")
+            print("Trn stomach non-exist resp:\t Max(", stomach_resp[np.where(delta[0,17,:,:] == 0.0)].max(), "),\tMin(", stomach_resp[np.where(delta[0,17,:,:] == 0.0)].min(),"),\tMean(",  stomach_resp[np.where(delta[0,17,:,:] == 0.0)].mean(), ")")
+
+
+
+#            logger.info("max human delta value:"+str(delta[0,:,:].reshape(-1)[np.argsort(delta[0,:,:].reshape(-1))[-7:]]))
+#            logger.info("max 1 delta value:"+str(delta[1,:,:].reshape(-1)[np.argsort(delta[1,:,:].reshape(-1))[-7:]]))
+#            logger.info("max 2 delta value:"+str(delta[2,:,:].reshape(-1)[np.argsort(delta[2,:,:].reshape(-1))[-7:]]))
+#            logger.info("max 3 delta value:"+str(delta[3,:,:].reshape(-1)[np.argsort(delta[3,:,:].reshape(-1))[-7:]]))
+#            logger.info("max 4 delta value:"+str(delta[4,:,:].reshape(-1)[np.argsort(delta[4,:,:].reshape(-1))[-7:]]))
+#            logger.info("max 5 delta value:"+str(delta[5,:,:].reshape(-1)[np.argsort(delta[5,:,:].reshape(-1))[-7:]]))
+#            logger.info("max 6 delta value:"+str(delta[6,:,:].reshape(-1)[np.argsort(delta[6,:,:].reshape(-1))[-7:]]))
+#            logger.info("max 7 delta value:"+str(delta[7,:,:].reshape(-1)[np.argsort(delta[7,:,:].reshape(-1))[-7:]]))
+#            logger.info("max 8 delta value:"+str(delta[8,:,:].reshape(-1)[np.argsort(delta[8,:,:].reshape(-1))[-7:]]))
+#            logger.info("max 9 delta value:"+str(delta[9,:,:].reshape(-1)[np.argsort(delta[9,:,:].reshape(-1))[-7:]]))
+#            logger.info("max 10 delta value:"+str(delta[10,:,:].reshape(-1)[np.argsort(delta[10,:,:].reshape(-1))[-7:]]))
+#            logger.info("max 11 delta value:"+str(delta[11,:,:].reshape(-1)[np.argsort(delta[11,:,:].reshape(-1))[-7:]]))
+#            logger.info("max 12 delta value:"+str(delta[12,:,:].reshape(-1)[np.argsort(delta[12,:,:].reshape(-1))[-7:]]))
+#            logger.info("max 13 delta value:"+str(delta[13,:,:].reshape(-1)[np.argsort(delta[13,:,:].reshape(-1))[-7:]]))
+#            logger.info("max 14 delta value:"+str(delta[14,:,:].reshape(-1)[np.argsort(delta[14,:,:].reshape(-1))[-7:]]))
+#            logger.info("max 15 delta value:"+str(delta[15,:,:].reshape(-1)[np.argsort(delta[15,:,:].reshape(-1))[-7:]]))
+#            logger.info("max 16 delta value:"+str(delta[16,:,:].reshape(-1)[np.argsort(delta[16,:,:].reshape(-1))[-7:]]))
+#            logger.info("max 17 delta value:"+str(delta[17,:,:].reshape(-1)[np.argsort(delta[17,:,:].reshape(-1))[-7:]]))
             #logger.info("max delta value:"+str(np.amax(delta[0])))
-            humans = get_humans_by_feature(resp, x, y, w, h, e, detection_thresh=0.01)
 
-            #self.next_input = self.next_input.sub_(self.mean).div_(self.std)
-            raw_img = img.mul_(std).add_(mean)
-            pil_image = Image.fromarray(np.squeeze(raw_img.cpu().numpy(), axis=0).astype(np.uint8).transpose(1, 2, 0)) 
+            humans, scores = get_humans_by_feature(resp, x, y, w, h, e, detection_thresh=0.15)
+            # basic detection_thresh = 0.15
 
-            pil_image = draw_humans(
-                keypoint_names=KEYPOINT_NAMES,
-                edges=EDGES,
-                pil_image=pil_image,
-                humans=humans,
-                visbbox= False,
-                gridOn = False
-            )   
+            #humans = get_humans_by_feature(resp, x, y, w, h, e, detection_thresh=0.0000000001)
+            #humans = get_humans_by_feature(resp, x, y, w, h, e, detection_thresh=0.001)
 
-            pil_image.save('output/training_test/predict_test_result_'+str(i)+'.png', 'PNG')
+            # PCKh metric
+
+            fname = val_dataset.filename_list[i]
+            gt_kps = np.array(val_dataset.data[fname][0], dtype='float32').reshape(-1,17,2)
+            gt_bboxes = val_dataset.data[fname][1]    # [center_x, center_y , width, height] for head
+            is_visible = val_dataset.data[fname][2]
+            size = val_dataset.data[fname][3]
+
+#            gt_kps = test_set.get_example(idx)['keypoints']
+#            gt_bboxs = test_set.get_example(idx)['bbox'] # (left_down_point, w, h)
+#            is_visible = test_set.get_example(idx)['is_visible']
+
+            # include pred_KPs, pred_bbox
+            pck_object[0].append(fname)
+            pck_object[1].append(gt_kps)
+            pck_object[2].append(humans)
+            pck_object[3].append(scores)
+            pck_object[4].append(gt_bboxes)
+            pck_object[5].append(is_visible)
+            pck_object[6].append(size)
+
+
+
+            if args.savefig:
+                raw_img = img.mul_(std).add_(mean)
+                raw_pil_image = Image.fromarray(np.squeeze(raw_img.cpu().numpy(), axis=0).astype(np.uint8).transpose(1, 2, 0))
+
+                pil_image = draw_humans(
+                    keypoint_names=KEYPOINT_NAMES,
+                    edges=EDGES,
+                    pil_image=raw_pil_image.copy(),
+                    humans=humans,
+                    visbbox= False,
+                    gridOn = True
+                )   
+
+                sample_fig = show_sample(raw_pil_image, delta[0], pil_image)
+
+                pil_image.save('output/training_test/predict_test_result_'+str(i)+'.png', 'PNG')
+                sample_fig.savefig('output/training_test/predict_test_resp_result_'+str(i)+'.png')
 
             if i>100:
                 break
 
-            #img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te = prefetcher.next()
+        evaluation(pck_object)
 
 def validate(val_loader, model, criterion, epoch, args):
     batch_time = AverageMeter()
@@ -1014,29 +1207,8 @@ def validate(val_loader, model, criterion, epoch, args):
     i = 0
     while img is not None:
         i += 1
-
-
         # compute output
         with torch.no_grad():
-
-#    with torch.no_grad():
-#        for i, (target_img, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te) in enumerate(val_loader):
-#            
-#            img = target_img.cuda()
-#
-#            delta = delta.cuda()
-#
-#            weight = weight.cuda()
-#            weight_ij = weight_ij.cuda()
-#            tx_half = tx_half.cuda()
-#            ty_half = ty_half.cuda()
-#
-#            tx = tx.cuda()
-#            ty = ty.cuda()
-#            tw = tw.cuda()
-#            th = th.cuda()
-#            te = te.cuda()
-
             output = model(img)
 
             loss, loss_resp, loss_iou, loss_coor, loss_size, loss_limb = criterion(
@@ -1191,8 +1363,8 @@ def adjust_learning_rate(optimizer, epoch, args):
     #lr = 0.007 * (1  - iters/260000)
     lr = get_lr(optimizer)
 
-    if epoch % 200 == 0 and epoch > 400 :
-        lr = 0.7* lr
+    if epoch % 300 == 0 and epoch > 1 :
+        lr = 0.5* lr
 
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr

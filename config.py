@@ -16,7 +16,8 @@ name_list = [
         "thorax",
         "pelvis",
         "neck",
-        "top"
+        "top",
+        "stomach"
 ]
 
 COLOR_MAP = {
@@ -36,36 +37,38 @@ COLOR_MAP = {
     'thorax': (255, 255, 0),
     'pelvis': (255,0,170),
     'neck': (237,185,185),
-    'top': (255, 0, 0)
+    'top': (255, 0, 0),
+    'stomach': (79, 35, 35)
 }
 
 EDGES_BY_NAME = [
-    ['instance', 'thorax'],
-    ['thorax', 'neck'],
-    ['neck', 'top'],
-    ['instance', 'left_shoulder'],
+    ['instance', 'neck'],
+    ['neck', 'thorax'],
+    ['thorax', 'left_shoulder'],
     ['left_shoulder', 'left_elbow'],
     ['left_elbow', 'left_wrist'],
-    ['instance', 'right_shoulder'],
+    ['thorax', 'right_shoulder'],
     ['right_shoulder', 'right_elbow'],
     ['right_elbow', 'right_wrist'],
-    ['instance', 'pelvis'],
+    ['thorax', 'stomach'],
+    ['stomach', 'pelvis'],
     ['pelvis', 'left_hip'],
     ['pelvis', 'right_hip'],
     ['left_hip', 'left_knee'],
     ['right_hip', 'right_knee'],
     ['left_knee', 'left_ankle'],
     ['right_knee', 'right_ankle'],
+    ['instance', 'top'],
 ]
 
-KEYPOINT_NAMES = ['instance'] + name_list
+KEYPOINT_NAMES = ['instance'] + name_list 
 EDGES = [[KEYPOINT_NAMES.index(s), KEYPOINT_NAMES.index(d)] for s, d in EDGES_BY_NAME]
 
-TRACK_ORDER_0 = ['instance', 'thorax', 'neck', 'top']
-TRACK_ORDER_1 = ['instance', 'left_shoulder', 'left_elbow', 'left_wrist']
-TRACK_ORDER_2 = ['instance', 'right_shoulder', 'right_elbow', 'right_wrist']
-TRACK_ORDER_3 = ['instance', 'pelvis', 'left_hip', 'left_knee', 'left_ankle']
-TRACK_ORDER_4 = ['instance', 'pelvis', 'right_hip', 'right_knee', 'right_ankle']
+TRACK_ORDER_0 = ['instance', 'neck', 'thorax', 'left_shoulder', 'left_elbow', 'left_wrist']
+TRACK_ORDER_1 = ['instance', 'neck', 'thorax', 'right_shoulder', 'right_elbow', 'right_wrist']
+TRACK_ORDER_2 = ['instance', 'neck', 'thorax', 'stomach', 'pelvis', 'left_hip', 'left_knee', 'left_ankle']
+TRACK_ORDER_3 = ['instance', 'neck', 'thorax', 'stomach', 'pelvis', 'right_hip', 'right_knee', 'right_ankle']
+TRACK_ORDER_4 = ['instance', 'top']
 
 TRACK_ORDERS = [TRACK_ORDER_0, TRACK_ORDER_1, TRACK_ORDER_2, TRACK_ORDER_3, TRACK_ORDER_4]
 
