@@ -128,22 +128,13 @@ parser.add_argument('--alp', '--alpha', default=0.12, type=float,
                     help='alpha (default: 0.12)',
                     dest='alpha')
 
-# Weightloss list
-#ratio = []
-#weightloss0 =  0 
-#weightloss1 =  0 
-#weightloss2 =  0 
-#weightloss3 =  0 
-#weightloss4 =  0 
-
-#TODO need to put insize of main function
-weightloss0 = torch.ones(1, dtype=torch.float32, device='cuda', requires_grad=True)
-weightloss1 = torch.ones(1, dtype=torch.float32, device='cuda', requires_grad=True)
-weightloss2 = torch.ones(1, dtype=torch.float32, device='cuda', requires_grad=True)
-weightloss3 = torch.ones(1, dtype=torch.float32, device='cuda', requires_grad=True)
-weightloss4 = torch.ones(1, dtype=torch.float32, device='cuda', requires_grad=True)
-
-ratio = [weightloss0, weightloss1, weightloss2, weightloss3, weightloss4]
+# Global parameter
+ratio = []
+weightloss0 =  0 
+weightloss1 =  0 
+weightloss2 =  0 
+weightloss3 =  0 
+weightloss4 =  0 
 
 # Augment implementation
 def area(bbox):
@@ -349,7 +340,6 @@ def main():
    
 
     #TODO Hardcoding local grid size
-    #local_grid_size=(29, 29)
     local_grid_size=(21, 21)
 
     # Detach under avgpoll layer in Resnet
@@ -380,16 +370,24 @@ def main():
 #                                weight_decay=args.weight_decay)
 
 
+    #TODO need to put insize of main function
+#    weightloss0 = torch.ones(1, dtype=torch.float32, requires_grad=True).cuda()
+#    weightloss1 = torch.ones(1, dtype=torch.float32, requires_grad=True).cuda()
+#    weightloss2 = torch.ones(1, dtype=torch.float32, requires_grad=True).cuda()
+#    weightloss3 = torch.ones(1, dtype=torch.float32, requires_grad=True).cuda()
+#    weightloss4 = torch.ones(1, dtype=torch.float32, requires_grad=True).cuda()
+
+    weightloss0 = torch.ones(1, dtype=torch.float32, device='cuda', requires_grad=True)
+    weightloss1 = torch.ones(1, dtype=torch.float32, device='cuda', requires_grad=True)
+    weightloss2 = torch.ones(1, dtype=torch.float32, device='cuda', requires_grad=True)
+    weightloss3 = torch.ones(1, dtype=torch.float32, device='cuda', requires_grad=True)
+    weightloss4 = torch.ones(1, dtype=torch.float32, device='cuda', requires_grad=True)
+
+    ratio = [weightloss0, weightloss1, weightloss2, weightloss3, weightloss4]
+
 
     optimizerM = torch.optim.Adam(model.parameters(), lr=args.lr)
     optimizerR = torch.optim.Adam(ratio, lr=args.lr)
-
-    # Initialize Amp.  Amp accepts either values or strings for the optional override arguments,
-    # for convenient interoperation with argparse.
-    # For distributed training, wrap the model with apex.parallel.DistributedDataParallel.
-    # This must be done AFTER the call to amp.initialize.  If model = DDP(model) is called
-    # before model, ... = amp.initialize(model, ...), the call to amp.initialize may alter
-    # the types of model's parameters in a way that disrupts or destroys DDP's allreduce hooks.
 
     if args.distributed:
         model, optimizerM = amp.initialize(model, optimizerM,
@@ -477,7 +475,6 @@ def main():
                     edges = EDGES
                     )
 
-
     val_dataset = KeypointsDataset(json_file = args.val_file, root_dir = args.root_dir,
                 transform=transforms.Compose([
                     IAA(insize,'val'),
@@ -528,6 +525,7 @@ def main():
 
 
     # Start trainin iterations
+    print("Training start")
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
@@ -741,11 +739,25 @@ def train(train_loader, model, criterion, optimizerM, optimizerR, epoch, args):
         loss_resp, loss_iou, loss_coor, loss_size, loss_limb = criterion(
                 img, output, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te)
 
-        l0 = torch.mul(ratio[0], loss_resp)
-        l1 = torch.mul(ratio[1], loss_iou)
-        l2 = torch.mul(ratio[2], loss_coor)
-        l3 = torch.mul(ratio[3], loss_size)
-        l4 = torch.mul(ratio[4], loss_limb)
+#        # broadcast weightloss0-4
+#        if args.local_rank == 0:
+#            dist.broadcast(weightloss0, args.local_rank)
+#            dist.broadcast(weightloss1, args.local_rank)
+#            dist.broadcast(weightloss2, args.local_rank)
+#            dist.broadcast(weightloss3, args.local_rank)
+#            dist.broadcast(weightloss4, args.local_rank)
+
+        l0 = torch.mul(weightloss0, loss_resp)
+        l1 = torch.mul(weightloss1, loss_iou)
+        l2 = torch.mul(weightloss2, loss_coor)
+        l3 = torch.mul(weightloss3, loss_size)
+        l4 = torch.mul(weightloss4, loss_limb)
+
+#        l0 = torch.mul(ratio[0], loss_resp)
+#        l1 = torch.mul(ratio[1], loss_iou)
+#        l2 = torch.mul(ratio[2], loss_coor)
+#        l3 = torch.mul(ratio[3], loss_size)
+#        l4 = torch.mul(ratio[4], loss_limb)
         
         loss = torch.div(l0+l1+l2+l3+l4, 5)
 
@@ -840,6 +852,15 @@ def train(train_loader, model, criterion, optimizerM, optimizerR, epoch, args):
         ratio = [torch.mul(weightloss0, coef),torch.mul(weightloss1, coef),torch.mul(weightloss2, coef),torch.mul(weightloss3, coef),torch.mul(weightloss4, coef)]
         #ratio = [coef*ratio[0], coef*ratio[1], coef*ratio[2], coef*ratio[3], coef*ratio[4]]
 
+#        # Reduce All weightloss0-4
+#        if args.local_rank == 0 and args.distributed:
+#            reduced_weight_resp = reduce_tensor(weightloss0.data)
+#            reduced_weight_iou = reduce_tensor(weightloss1.data)
+#            reduced_weight_coor = reduce_tensor(weightloss2.data)
+#            reduced_weight_size = reduce_tensor(weightloss3.data)
+#            reduced_weight_limb = reduce_tensor(weightloss4.data)
+#            ratio = [reduced_loss_resp, reduced_loss_iou, reduced_loss_coor, reduced_loss_size, reduced_loss_limb]
+
         if args.local_rank == 0:
             if i % args.print_freq == 0 or i == len(train_loader)-1:
 
@@ -852,13 +873,19 @@ def train(train_loader, model, criterion, optimizerM, optimizerR, epoch, args):
                     reduced_loss_limb = reduce_tensor(loss_limb.data)
                     reduced_resp_data = reduce_tensor(output.data)
 
-                    # Weightlosses
+#                    # Weightlosses
+#                    reduced_weight_resp = reduce_tensor(weightloss0.data)
+#                    reduced_weight_iou = reduce_tensor(weightloss1.data)
+#                    reduced_weight_coor = reduce_tensor(weightloss2.data)
+#                    reduced_weight_size = reduce_tensor(weightloss3.data)
+#                    reduced_weight_limb = reduce_tensor(weightloss4.data)
+                    
                     reduced_weight_resp = reduce_tensor(ratio[0].data)
                     reduced_weight_iou = reduce_tensor(ratio[1].data)
                     reduced_weight_coor = reduce_tensor(ratio[2].data)
                     reduced_weight_size = reduce_tensor(ratio[3].data)
                     reduced_weight_limb = reduce_tensor(ratio[4].data)
-                    
+
                 else:
                     reduced_loss = loss.data
                     reduced_loss_resp = loss_resp.data
@@ -1010,17 +1037,7 @@ def train(train_loader, model, criterion, optimizerM, optimizerR, epoch, args):
                 plotter.plot('weight', 'weight_size', 'Weight Loss', epoch + (i/len(train_loader)), weights_size.val)
                 plotter.plot('weight', 'weight_limb', 'Weight Loss', epoch + (i/len(train_loader)), weights_limb.val)
 
-#        del output
-#        del loss
-#        del loss_resp
-#        del loss_iou
-#        del loss_limb
-#        del loss_coor
-#        del loss_size
-
     return losses.val
-
-#TODO function for evaluation like OKS
 
 def test_output(val_loader, val_dataset, model, criterion, epoch, outsize, local_grid_size, args):
     from datatest import get_humans_by_feature, draw_humans, show_sample, evaluation
@@ -1435,7 +1452,6 @@ def reduce_tensor(tensor):
     global args
     rt = tensor.clone()
     dist.all_reduce(rt, op=dist.ReduceOp.SUM)
-    #TODO hardcoding world_size
     rt /= args.world_size
     return rt
 
