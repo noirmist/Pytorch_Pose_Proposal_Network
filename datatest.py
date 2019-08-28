@@ -121,37 +121,37 @@ def get_humans_by_feature(delta, x, y, w, h, e, detection_thresh=0.15, min_num_k
 
     humans = []
     scores = []
-    
-#    logger.info('delta shape: %s', delta.shape)
-#    logger.info('x shape: %s', x.shape)
-#    logger.info('y shape: %s', y.shape)
-#    logger.info('w shape: %s', w.shape)
-#    logger.info('h shape: %s', h.shape)
-#    logger.info('e shape: %s', e.shape)
-
     e = e.transpose(0, 3, 4, 1, 2)
-#    logger.info('e shape: %s', e.shape)
+    logger.info('e shape: %s', e.shape)
     ei = 0  # index of edges which contains ROOT_NODE as begin
+
     # alchemy_on_humans
     for hxw in zip(candidate[0][selected], candidate[1][selected]):
         human = {ROOT_NODE: bbox[(ROOT_NODE, hxw[0], hxw[1])]}  # initial
         score = {ROOT_NODE : delta[(ROOT_NODE, hxw[0], hxw[1])]}
-        for graph in DIRECTED_GRAPHS:
+
+        for g_idx, graph in enumerate(DIRECTED_GRAPHS):
+            logger.info('graph_index: %s',g_idx)
             
             eis, ts = graph
             i_h, i_w = hxw
+            logger.info('ts: %s', ts)
+
             for ei, t in zip(eis, ts):
                 index = (ei, i_h, i_w)  # must be tuple
-                #logger.info('e[idx] shape: %s', e[index].shape)
+                logger.info('e[idx] shape: %s', e[index].shape)
                 #logger.info('e[idx]: %s', e[index])
 
                 u_ind = np.unravel_index(np.argmax(e[index]), e[index].shape) # max value in e[index]
+                logger.info('e[%s]: %s',u_ind, e[index][u_ind])
+
 
                 logger.info('index: %s',index)
                 logger.info('u_ind: %s', u_ind)
                 logger.info('local_grid_size: %s', local_grid_size)
-                j_h = i_h + u_ind[0] - (local_grid_size[1] // 2)
-                j_w = i_w + u_ind[1] - (local_grid_size[0] // 2)
+                j_h = i_h + u_ind[0] - (local_grid_size[0] // 2)
+                j_w = i_w + u_ind[1] - (local_grid_size[1] // 2)
+
                 logger.info('t: %s, j_h: %s, j_w: %s',t, j_h, j_w)
 
                 if j_h < 0 or j_w < 0 or j_h >= outH or j_w >= outW:

@@ -82,11 +82,12 @@ class PoseProposalNet(nn.Module):
 
         #self.linear = nn.Linear(144,1024)
         self.lRelu = nn.LeakyReLU(0.1)
-        self.bn = nn.BatchNorm2d(512)
+        self.bn1 = nn.BatchNorm2d(512)
+        self.bn2 = nn.BatchNorm2d(512)
         self.Relu = nn.ReLU()
-        self.Gelu = GELU()
-        self.dropout = nn.Dropout2d(p=0.2)
-        self.dropout5 = nn.Dropout2d(p=0.5)
+#        self.Gelu = GELU()
+#        self.dropout = nn.Dropout2d(p=0.2)
+#        self.dropout5 = nn.Dropout2d(p=0.5)
         self.sigmoid = nn.Sigmoid()
 
         for m in self.modules():
@@ -121,12 +122,12 @@ class PoseProposalNet(nn.Module):
 #        #out = self.Relu(conv3_out)
 
         conv1_out = self.conv1(resnet_out)
-        bn1 = self.bn(conv1_out)
+        bn1 = self.bn1(conv1_out)
         #Gelu1 = self.Gelu(bn1)
         lRelu1 = self.lRelu(bn1)
 
         conv2_out = self.conv2(lRelu1)
-        bn2 = self.bn(conv2_out)
+        bn2 = self.bn2(conv2_out)
         #Gelu2 = self.Gelu(bn2)
         lRelu2 = self.lRelu(bn2)
         #drp2 = self.dropout5(Gelu2)
