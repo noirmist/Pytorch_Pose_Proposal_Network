@@ -130,16 +130,6 @@ parser.add_argument('--alp', '--alpha', default=0.12, type=float,
                     help='alpha (default: 0.12)',
                     dest='alpha')
 
-# Global parameter
-weightloss = []
-weightloss0 =  0 
-weightloss1 =  0 
-weightloss2 =  0 
-weightloss3 =  0 
-weightloss4 =  0 
-
-#print("global weightloss id:", id(weightloss))
-
 # Augment implementation
 def area(bbox):
     _, _, w, h = bbox
@@ -348,6 +338,11 @@ def main():
 
     model = model.cuda()
 
+    # Weight model
+    weight_model = nn.Linear(5,1, bias=False).cuda()
+    weight_model.weight.data.fill_(1.0)
+
+
     # Test model to get outsize
     inputs = torch.randn(1,3, args.image_size, args.image_size).cuda()
     y =  model(inputs)
@@ -364,27 +359,8 @@ def main():
 #                                weight_decay=args.weight_decay)
 
 
-    #TODO need to put insize of main function
-#    weightloss0 = torch.ones(1, dtype=torch.float32, requires_grad=True).cuda()
-#    weightloss1 = torch.ones(1, dtype=torch.float32, requires_grad=True).cuda()
-#    weightloss2 = torch.ones(1, dtype=torch.float32, requires_grad=True).cuda()
-#    weightloss3 = torch.ones(1, dtype=torch.float32, requires_grad=True).cuda()
-#    weightloss4 = torch.ones(1, dtype=torch.float32, requires_grad=True).cuda()
-
-    weightloss0 = torch.ones(1, dtype=torch.float32, device='cuda', requires_grad=True)
-    weightloss1 = torch.ones(1, dtype=torch.float32, device='cuda', requires_grad=True)
-    weightloss2 = torch.ones(1, dtype=torch.float32, device='cuda', requires_grad=True)
-    weightloss3 = torch.ones(1, dtype=torch.float32, device='cuda', requires_grad=True)
-    weightloss4 = torch.ones(1, dtype=torch.float32, device='cuda', requires_grad=True)
-
-    weightloss = [weightloss0, weightloss1, weightloss2, weightloss3, weightloss4]
-
-    print("main weightloss id:", id(weightloss))
-    print("main weightloss:", weightloss)
-    sys.stdout.flush()
-
     optimizerM = torch.optim.Adam(model.parameters(), lr=args.lr)
-    optimizerR = torch.optim.Adam(weightloss, lr=args.lr)
+    optimizerR = torch.optim.Adam(weight_model.parameters(), lr=args.lr)
 
     if args.distributed:
         model, optimizerM = amp.initialize(model, optimizerM,
@@ -392,6 +368,7 @@ def main():
                                       keep_batchnorm_fp32= None,
                                       loss_scale=args.loss_scale
                                       )
+        weight_model, optimizerR = amp.initialize(weight_model, optimizerR, opt_level = args.opt_level)
         
         model = DDP(model, delay_allreduce=True)
 
@@ -404,39 +381,16 @@ def main():
                 local_grid_size = local_grid_size,
                 edges = EDGES,
             ).cuda()
-    '''
-                lambda_resp= args.lambda_resp,
-                lambda_iou= args.lambda_iou,
-                lambda_coor= args.lambda_coor,
-                lambda_size= args.lambda_size,
-                lambda_limb= args.lambda_limb
-
-                lambda_resp=0.25,
-                lambda_iou=1.0,
-                lambda_coor=5.0,
-                lambda_size=5.0,
-                lambda_limb=0.5
-    '''
 
     # Optionally resume from a checkpoint
     if args.resume:
         # Use a local scope to avoid dangling references
         def resume():
-            global weightloss, best_loss, weightloss0, weightloss1, weightloss2, weightloss3, weightloss4
             if os.path.isfile(args.resume):
                 print("=> loading checkpoint '{}'".format(args.resume))
                 checkpoint = torch.load(args.resume, map_location = lambda storage, loc: storage.cuda(args.gpu))
                 args.start_epoch = checkpoint['epoch']
                 best_loss = checkpoint['best_loss']
-                for i in range(5):
-                    #weightloss[i].data = checkpoint['ratio'][i].data
-                    weightloss[i].data = checkpoint['weightloss'][i].data
-
-                weightloss0.data = weightloss[0].data
-                weightloss1.data = weightloss[1].data
-                weightloss2.data = weightloss[2].data
-                weightloss3.data = weightloss[3].data
-                weightloss4.data = weightloss[4].data
 
                 if args.parallel_ckpt:
                     from collections import OrderedDict
@@ -445,9 +399,17 @@ def main():
                         name = k[7:] # remove `module.`
                         new_state_dict[name] = v
 
+#                    new_model_state_dict = OrderedDict()
+#                    for k, v in checkpoint['model_state_dict'].items():
+#                        name = k[7:] # remove `module.`
+#                        new_state_dict[name] = v
+
                     model.load_state_dict(new_state_dict)
+#                    weight_model.load_state_dict(new_model_state_dict)
+
                 else:
                     model.load_state_dict(checkpoint['state_dict'])
+#                    weight_model.load_state_dict(checkpoint['model_state_dict'])
 
                 optimizerM.load_state_dict(checkpoint['optimizerM'])
                 optimizerR.load_state_dict(checkpoint['optimizerR'])
@@ -457,15 +419,7 @@ def main():
                 print("=> no checkpoint found at '{}'".format(args.resume))
         resume()
 
-    print("resume weightloss id :", id(weightloss))
-    print("resume weightloss:", weightloss)
-    sys.stdout.flush()
-    
-    print("weightloss0", weightloss0, weightloss[0])
-    print("weightloss1", weightloss1, weightloss[1])
-    print("weightloss2", weightloss2, weightloss[2])
-    print("weightloss3", weightloss3, weightloss[3])
-    print("weightloss4", weightloss4, weightloss[4])
+    print("resumed weight", weight_model.weight)
     sys.stdout.flush()
 
     if args.reset_lr:
@@ -567,6 +521,7 @@ def main():
                 'epoch': epoch + 1,
                 'arch': args.arch,
                 'state_dict': model.state_dict(),
+                'weight_state_dict': weight_model.state_dict(),
                 'best_loss': best_loss,
                 'optimizerM' : optimizerM.state_dict(),
                 'weightloss': weightloss,
