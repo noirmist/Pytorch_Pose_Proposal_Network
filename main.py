@@ -338,6 +338,13 @@ def main():
 
     model = model.cuda()
 
+
+#    if args.local_rank ==0:
+#        for ((name, value), value2) in zip(model.named_parameters(),model.parameters()):
+#            print(name)
+#            print(value.shape, value2.shape)
+#    sys.exit(0)
+
     # Weight model
     weight_model = nn.Linear(5,1, bias=False).cuda()
     weight_model.weight.data.fill_(1.0)
@@ -399,17 +406,17 @@ def main():
                         name = k[7:] # remove `module.`
                         new_state_dict[name] = v
 
-#                    new_model_state_dict = OrderedDict()
-#                    for k, v in checkpoint['model_state_dict'].items():
-#                        name = k[7:] # remove `module.`
-#                        new_state_dict[name] = v
+                    new_model_state_dict = OrderedDict()
+                    for k, v in checkpoint['model_state_dict'].items():
+                        name = k[7:] # remove `module.`
+                        new_state_dict[name] = v
 
                     model.load_state_dict(new_state_dict)
-#                    weight_model.load_state_dict(new_model_state_dict)
+                    weight_model.load_state_dict(new_model_state_dict)
 
                 else:
                     model.load_state_dict(checkpoint['state_dict'])
-#                    weight_model.load_state_dict(checkpoint['model_state_dict'])
+                    weight_model.load_state_dict(checkpoint['model_state_dict'])
 
                 optimizerM.load_state_dict(checkpoint['optimizerM'])
                 optimizerR.load_state_dict(checkpoint['optimizerR'])
@@ -489,8 +496,11 @@ def main():
 
     # Start trainin iterations
     print("Training start")
-    base = get_baseloss(train_loader, model, criterion)
 
+    #base = get_baseloss(train_loader, model, criterion)
+
+    base = [torch.tensor([3911.7922]).cuda(), torch.tensor([18.1335]).cuda(),torch.tensor([24.9189]).cuda(),torch.tensor([31.3605]).cuda(),torch.tensor([13727.9912]).cuda()]
+            
     print("base loss:", base)
     
     for epoch in range(args.start_epoch, args.epochs):
@@ -501,15 +511,15 @@ def main():
         adjust_learning_rate(optimizerM, epoch, args)
 
         # train for one epoch
-        train_epoch_loss = train(train_loader, model, criterion, optimizerM, optimizerR, epoch, args, base)
+        train_epoch_loss = train(train_loader, model, weight_model, criterion, optimizerM, optimizerR, epoch, args, base)
 
         # evaluate on validation set
-        #epoch_loss = validate(val_loader, model, criterion, epoch, args)
+        #epoch_loss = validate(val_loader, model, weight_model, criterion, epoch, args)
 
         # remember best acc@1 and save checkpoint
         if args.local_rank == 0:
 
-            #plotter.plot('loss', 'train(epoch)', 'PPN Loss', epoch+1, train_epoch_loss) 
+            plotter.plot('loss', 'train(epoch)', 'PPN Loss', epoch+1, train_epoch_loss) 
             #plotter.plot('loss', 'val', 'PPN Loss', epoch+1, epoch_loss) 
 
             #is_best = epoch_loss < best_loss
@@ -703,17 +713,8 @@ def get_baseloss(train_loader, model, criterion):
 
     return [base_l0.detach(), base_l1.detach(), base_l2.detach(), base_l3.detach(), base_l4.detach()]
 
-def train(train_loader, model, criterion, optimizerM, optimizerR, epoch, args, base):
-    global weightloss, weightloss0, weightloss1, weightloss2, weightloss3, weightloss4
-
+def train(train_loader, model, weight_model, criterion, optimizerM, optimizerR, epoch, args, base):
     Gradloss = nn.L1Loss()
-
-    print("weightloss0", weightloss0, weightloss[0])
-    print("weightloss1", weightloss1, weightloss[1])
-    print("weightloss2", weightloss2, weightloss[2])
-    print("weightloss3", weightloss3, weightloss[3])
-    print("weightloss4", weightloss4, weightloss[4])
-    sys.stdout.flush()
 
     #train function
 
@@ -757,34 +758,18 @@ def train(train_loader, model, criterion, optimizerM, optimizerR, epoch, args, b
         th = samples.th.cuda()
         te = samples.te.cuda()
 
-        print("weightloss0", weightloss0, weightloss[0])
-        print("weightloss1", weightloss1, weightloss[1])
-        print("weightloss2", weightloss2, weightloss[2])
-        print("weightloss3", weightloss3, weightloss[3])
-        print("weightloss4", weightloss4, weightloss[4])
-        sys.stdout.flush()
-
         # compute output
-        #print(args.local_rank, " sample data ready")
-        sys.stdout.flush()
-
         output = model(img)
         loss_resp, loss_iou, loss_coor, loss_size, loss_limb = criterion(
                 img, output, delta, weight, weight_ij, tx_half, ty_half, tx, ty, tw, th, te)
 
-        #print(args.local_rank, "loss ready")
-        sys.stdout.flush()
-
-        l0 = torch.mul(weightloss[0], loss_resp)
-        l1 = torch.mul(weightloss[1], loss_iou)
-        l2 = torch.mul(weightloss[2], loss_coor)
-        l3 = torch.mul(weightloss[3], loss_size)
-        l4 = torch.mul(weightloss[4], loss_limb)
+        l0 = torch.mul(weight_model.weight[0][0], loss_resp)
+        l1 = torch.mul(weight_model.weight[0][1], loss_resp)
+        l2 = torch.mul(weight_model.weight[0][2], loss_resp)
+        l3 = torch.mul(weight_model.weight[0][3], loss_resp)
+        l4 = torch.mul(weight_model.weight[0][4], loss_resp)
 
         loss = torch.div(l0+l1+l2+l3+l4, 5)
-
-        #print(args.local_rank, "weighted loss ready")
-        sys.stdout.flush()
 
         # compute gradient and do step
         optimizerM.zero_grad()
@@ -795,56 +780,29 @@ def train(train_loader, model, criterion, optimizerM, optimizerR, epoch, args, b
         else:
             loss.backward(retain_graph=True)
 
-        print("backward weightloss0", weightloss0, weightloss[0])
-        print("backward weightloss1", weightloss1, weightloss[1])
-        print("backward weightloss2", weightloss2, weightloss[2])
-        print("backward weightloss3", weightloss3, weightloss[3])
-        print("backward weightloss4", weightloss4, weightloss[4])
-        sys.stdout.flush()
-
-        #print(args.local_rank, "backward loss")
-        sys.stdout.flush()
-
         # Getting gradients of the first layers of each tower and calculate their l2-norm 
         param = list(model.parameters())
 
-        #print(args.local_rank, "get parameters")
+        print("autograd")
         sys.stdout.flush()
 
-        G0R = torch.autograd.grad(l0, param[0], retain_graph=True, create_graph=True)
+        # 0 -> -8 : conv2 weight
+        G0R = torch.autograd.grad(l0, param[-8], retain_graph=True, create_graph=True)
         G0 = torch.norm(G0R[0], 2)
 
-        #print(args.local_rank, "G0")
-        sys.stdout.flush()
-
-        G1R = torch.autograd.grad(l1, param[0], retain_graph=True, create_graph=True)
+        G1R = torch.autograd.grad(l1, param[-8], retain_graph=True, create_graph=True)
         G1 = torch.norm(G1R[0], 2)
 
-        #print(args.local_rank, "G1")
-        sys.stdout.flush()
-
-        G2R = torch.autograd.grad(l2, param[0], retain_graph=True, create_graph=True)
+        G2R = torch.autograd.grad(l2, param[-8], retain_graph=True, create_graph=True)
         G2 = torch.norm(G2R[0], 2)
 
-        #print(args.local_rank, "G2")
-        sys.stdout.flush()
-
-        G3R = torch.autograd.grad(l3, param[0], retain_graph=True, create_graph=True)
+        G3R = torch.autograd.grad(l3, param[-8], retain_graph=True, create_graph=True)
         G3 = torch.norm(G3R[0], 2)
 
-        #print(args.local_rank, "G3")
-        sys.stdout.flush()
-
-        G4R = torch.autograd.grad(l4, param[0], retain_graph=True, create_graph=True)
+        G4R = torch.autograd.grad(l4, param[-9], retain_graph=True, create_graph=True)
         G4 = torch.norm(G4R[0], 2)
 
-        #print(args.local_rank, "G4")
-        sys.stdout.flush()
-
         G_avg = torch.div(G0+G1+G2+G3+G4, 5)
-        
-        #print(args.local_rank, "G_avg ready")
-        sys.stdout.flush()
 
         # Calculating relative losses 
         lhat0 = torch.div(l0, base[0])
@@ -854,9 +812,6 @@ def train(train_loader, model, criterion, optimizerM, optimizerR, epoch, args, b
         lhat4 = torch.div(l4, base[4])
 
         lhat_avg = torch.div(lhat0+lhat1+lhat2+lhat3+lhat4, 5)
-
-        #print(args.local_rank, "lhat ready")
-        sys.stdout.flush()
 
         # Calculating relative inverse training rates for tasks 
         inv_rate0 = torch.div(lhat0,lhat_avg)
@@ -879,88 +834,43 @@ def train(train_loader, model, criterion, optimizerM, optimizerR, epoch, args, b
         C3 = C3.detach().squeeze()
         C4 = C4.detach().squeeze()
 
-        #print(args.local_rank, "Cn ready")
+        print(args.local_rank, "Cn ready")
         sys.stdout.flush()
 
         optimizerR.zero_grad()
         
         # Calculating the gradient loss according to Eq. 2 in the GradNorm paper
-        #Lgrad = torch.add(torch.add(torch.add(torch.add(Gradloss(G0,C0), Gradloss(G1,C1)), Gradloss(G2,C2)), Gradloss(G3,C3)), Gradloss(G4,C4))
+
         Lgrad = Gradloss(G0,C0) + Gradloss(G1,C1) + Gradloss(G2,C2) + Gradloss(G3,C3) + Gradloss(G4,C4)
 
         Lgrad.backward()
-        #print(args.local_rank, "backward Lgrad")
-
-        print("Lgrad weightloss0", weightloss0, weightloss[0])
-        print("Lgrad weightloss1", weightloss1, weightloss[1])
-        print("Lgrad weightloss2", weightloss2, weightloss[2])
-        print("Lgrad weightloss3", weightloss3, weightloss[3])
-        print("Lgrad weightloss4", weightloss4, weightloss[4])
-        sys.stdout.flush()
+        print(args.local_rank, "backward Lgrad")
 
         # Updating loss weights 
         optimizerR.step()
 
-        print("R_step weightloss0", weightloss0, weightloss[0])
-        print("R_step weightloss1", weightloss1, weightloss[1])
-        print("R_step weightloss2", weightloss2, weightloss[2])
-        print("R_step weightloss3", weightloss3, weightloss[3])
-        print("R_step weightloss4", weightloss4, weightloss[4])
-        sys.stdout.flush()
-
         # Updating the model weights
         optimizerM.step()
 
-        print("M_step weightloss0", weightloss0, weightloss[0])
-        print("M_step weightloss1", weightloss1, weightloss[1])
-        print("M_step weightloss2", weightloss2, weightloss[2])
-        print("M_step weightloss3", weightloss3, weightloss[3])
-        print("M_step weightloss4", weightloss4, weightloss[4])
+        with torch.no_grad():
+
+            if args.world_size > 1:
+                dist.all_reduce(weight_model.weight)
+                weight_model.weight.div_(args.world_size)
+
+            # Clamp negative value
+            weight_model.weight.clamp_(min=0.0)
+
+            # Normalized weight value
+            weight_model.weight.div_(torch.mean(weight_model.weight))
+
+        print("normalize weightloss0", weight_model.weight[0][0])
+        print("normalize weightloss1", weight_model.weight[0][1])
+        print("normalize weightloss2", weight_model.weight[0][2])
+        print("normalize weightloss3", weight_model.weight[0][3])
+        print("normalize weightloss4", weight_model.weight[0][4])
         sys.stdout.flush()
 
-        #print(args.local_rank, "update both optimizer")
-
-        if args.world_size > 1:
-
-            dist.all_reduce(weightloss0.data)
-            dist.all_reduce(weightloss1.data)
-            dist.all_reduce(weightloss2.data)
-            dist.all_reduce(weightloss3.data)
-            dist.all_reduce(weightloss4.data)
-
-            weightloss0.data /= args.world_size
-            weightloss1.data /= args.world_size
-            weightloss2.data /= args.world_size
-            weightloss3.data /= args.world_size
-            weightloss4.data /= args.world_size
-
-        print(args.local_rank, "mix multiple gpu weightlosses")
-
-        # Renormalizing the losses weights
-        #coef = 5/(weightloss[0].detach() + weightloss[1].detach() + weightloss[2].detach() + weightloss[3].detach() + weightloss[4].detach())
-        #coef = 5/(weightloss[0] + weightloss[1] + weightloss[2] + weightloss[3] + weightloss[4])
-        coef = 5/(weightloss0 + weightloss1 + weightloss2 + weightloss3 + weightloss4)
-
-        weightloss[0] = coef*weightloss0
-        weightloss[1] = coef*weightloss1
-        weightloss[2] = coef*weightloss2
-        weightloss[3] = coef*weightloss3
-        weightloss[4] = coef*weightloss4
-
-        print("normalize weightloss0", id(weightloss0), weightloss0, id(weightloss[0]), weightloss[0])
-        print("normalize weightloss1", id(weightloss1), weightloss1, id(weightloss[1]), weightloss[1])
-        print("normalize weightloss2", id(weightloss2), weightloss2, id(weightloss[2]), weightloss[2])
-        print("normalize weightloss3", id(weightloss3), weightloss3, id(weightloss[3]), weightloss[3])
-        print("normalize weightloss4", id(weightloss4), weightloss4, id(weightloss[4]), weightloss[4])
-        sys.stdout.flush()
-
-        # Reduce All weightloss0-4
-        #if args.local_rank == 0 and args.distributed:
-#        weightloss[0] = reduce_tensor(weightloss[0])
-#        weightloss[1] = reduce_tensor(weightloss[1])
-#        weightloss[2] = reduce_tensor(weightloss[2])
-#        weightloss[3] = reduce_tensor(weightloss[3])
-#        weightloss[4] = reduce_tensor(weightloss[4])
 
         if args.local_rank == 0:
             if i % args.print_freq == 0 or i == len(train_loader)-1:
@@ -975,11 +885,11 @@ def train(train_loader, model, criterion, optimizerM, optimizerR, epoch, args, b
                     reduced_resp_data = reduce_tensor(output.detach())
 
                     # Weightlosses
-                    reduced_weightloss_resp = reduce_tensor(weightloss[0].detach())
-                    reduced_weightloss_iou = reduce_tensor(weightloss[1].detach())
-                    reduced_weightloss_coor = reduce_tensor(weightloss[2].detach())
-                    reduced_weightloss_size = reduce_tensor(weightloss[3].detach())
-                    reduced_weightloss_limb = reduce_tensor(weightloss[4].detach())
+                    reduced_weightloss_resp = reduce_tensor(weight_model.weight[0][0].detach())
+                    reduced_weightloss_iou = reduce_tensor(weight_model.weight[0][1].detach())
+                    reduced_weightloss_coor = reduce_tensor(weight_model.weight[0][2].detach())
+                    reduced_weightloss_size = reduce_tensor(weight_model.weight[0][3].detach())
+                    reduced_weightloss_limb = reduce_tensor(weight_model.weight[0][4].detach())
 
                 else:
                     reduced_loss = loss.detach()
@@ -1045,12 +955,12 @@ def train(train_loader, model, criterion, optimizerM, optimizerR, epoch, args, b
                     weightloss_resp=weightlosses_resp, weightloss_iou=weightlosses_iou, weightloss_coor=weightlosses_coor, weightloss_size=weightlosses_size, weightloss_limb=weightlosses_limb, total_weightloss=weightlosses_resp.val +weightlosses_coor.val +weightlosses_iou.val +weightlosses_size.val +weightlosses_limb.val))
                 sys.stdout.flush()
 
-#                plotter.plot('loss', 'train', 'PPN Loss', epoch + (i/len(train_loader)), losses.avg) 
-#                plotter.plot('weight', 'weight_resp', 'Weight Loss', epoch + (i/len(train_loader)), weightlosses_resp.val)
-#                plotter.plot('weight', 'weight_iou', 'Weight Loss', epoch + (i/len(train_loader)), weightlosses_iou.val)
-#                plotter.plot('weight', 'weight_coor', 'Weight Loss', epoch + (i/len(train_loader)), weightlosses_coor.val)
-#                plotter.plot('weight', 'weight_size', 'Weight Loss', epoch + (i/len(train_loader)), weightlosses_size.val)
-#                plotter.plot('weight', 'weight_limb', 'Weight Loss', epoch + (i/len(train_loader)), weightlosses_limb.val)
+                plotter.plot('loss', 'train', 'PPN Loss', epoch + (i/len(train_loader)), losses.avg) 
+                plotter.plot('weight', 'weight_resp', 'Weight Loss', epoch + (i/len(train_loader)), weightlosses_resp.val)
+                plotter.plot('weight', 'weight_iou', 'Weight Loss', epoch + (i/len(train_loader)), weightlosses_iou.val)
+                plotter.plot('weight', 'weight_coor', 'Weight Loss', epoch + (i/len(train_loader)), weightlosses_coor.val)
+                plotter.plot('weight', 'weight_size', 'Weight Loss', epoch + (i/len(train_loader)), weightlosses_size.val)
+                plotter.plot('weight', 'weight_limb', 'Weight Loss', epoch + (i/len(train_loader)), weightlosses_limb.val)
 
     return losses.val
 
