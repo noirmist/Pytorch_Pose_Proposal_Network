@@ -97,24 +97,25 @@ def get_humans_by_feature(delta, x, y, w, h, e, detection_thresh=0.15, min_num_k
     bbox = np.array([ymin, xmin, ymax, xmax])
     #logger.info('bbox: %s', bbox.shape) #bbox: (4, 18, 24, 24)
     bbox = bbox.transpose(1, 2, 3, 0)
-    #logger.info('tr bbox: %s', bbox.shape)  #tr bbox: (18, 24, 24, 4)
+    #logger.info('transposed bbox: %s', bbox.shape)  #tr bbox: (18, 24, 24, 4)
+    #logger.info('delta: %s', delta.shape)  #tr bbox: (18, 24, 24, 4)
     root_bbox = bbox[ROOT_NODE]
     score = delta[ROOT_NODE]
-    logger.info('score: %s', score.shape)
+    #logger.info('score: %s', score.shape)
     # Find person boxes which better confidence than the threshold
     candidate = np.where(score > detection_thresh)
-    logger.info('candidate: %s', candidate)
+    #logger.info('candidate: %s', candidate)
     #logger.info('score: %s', score)
-    logger.info('outsize: %s, %s', outW, outH)
+    #logger.info('outsize: %s, %s', outW, outH)
         
     score = score[candidate]
 
     root_bbox = root_bbox[candidate]
     selected = non_maximum_suppression(
         bbox=root_bbox, thresh=0.3, score=score)
-    logger.info('selected: %s', selected)
+    #logger.info('selected: %s', selected)
     root_bbox = root_bbox[selected]
-    logger.info('root_bbox: %s', root_bbox)
+    #logger.info('root_bbox: %s', root_bbox)
     
     logger.info('detect instance {:.5f}'.format(time.time() - start))
     start = time.time()
@@ -122,37 +123,42 @@ def get_humans_by_feature(delta, x, y, w, h, e, detection_thresh=0.15, min_num_k
     humans = []
     scores = []
     e = e.transpose(0, 3, 4, 1, 2)
-    logger.info('e shape: %s', e.shape)
+    #logger.info('e shape: %s', e.shape)
     ei = 0  # index of edges which contains ROOT_NODE as begin
 
+    #logger.info('candidate[0]: %s', candidate[0][selected])
+    #logger.info('candidate[1]: %s', candidate[1][selected])
     # alchemy_on_humans
     for hxw in zip(candidate[0][selected], candidate[1][selected]):
         human = {ROOT_NODE: bbox[(ROOT_NODE, hxw[0], hxw[1])]}  # initial
         score = {ROOT_NODE : delta[(ROOT_NODE, hxw[0], hxw[1])]}
 
         for g_idx, graph in enumerate(DIRECTED_GRAPHS):
-            logger.info('graph_index: %s',g_idx)
-            
+            #logger.info('graph_index: %s',g_idx)
             eis, ts = graph
             i_h, i_w = hxw
-            logger.info('ts: %s', ts)
+            #logger.info('ts: %s', ts)
 
+            #delta_max_idx = np.unravel_index(np.argmax(delta[ts]), delta[ts].shape)
+            
             for ei, t in zip(eis, ts):
                 index = (ei, i_h, i_w)  # must be tuple
-                logger.info('e[idx] shape: %s', e[index].shape)
+                #logger.info('e[idx] shape: %s', e[index].shape)
                 #logger.info('e[idx]: %s', e[index])
-
+                #logger.info('delta_max_idx: %s', np.unravel_index(delta[t].ravel().argsort()[-1*len(selected):] ,delta[t].shape))
+                
                 u_ind = np.unravel_index(np.argmax(e[index]), e[index].shape) # max value in e[index]
-                logger.info('e[%s]: %s',u_ind, e[index][u_ind])
 
+                #logger.info('e[%s]: %s',u_ind, e[index][u_ind])
+                #logger.info('delta[%s]: %s',index, delta[index])
 
-                logger.info('index: %s',index)
-                logger.info('u_ind: %s', u_ind)
-                logger.info('local_grid_size: %s', local_grid_size)
+                #logger.info('index: %s',index)
+                #logger.info('u_ind: %s', u_ind)
+                #logger.info('local_grid_size: %s', local_grid_size)
                 j_h = i_h + u_ind[0] - (local_grid_size[0] // 2)
                 j_w = i_w + u_ind[1] - (local_grid_size[1] // 2)
 
-                logger.info('t: %s, j_h: %s, j_w: %s',t, j_h, j_w)
+                #logger.info('t: %s, j_h: %s, j_w: %s',t, j_h, j_w)
 
                 if j_h < 0 or j_w < 0 or j_h >= outH or j_w >= outW:
                     logger.info('Out of bound: t: %s, j_h: %s, j_w: %s',t, j_h, j_w)
@@ -166,7 +172,7 @@ def get_humans_by_feature(delta, x, y, w, h, e, detection_thresh=0.15, min_num_k
                 human[t] = bbox[(t, j_h, j_w)]
                 score[t] = delta[(t, j_h, j_w)]
 
-                logger.info('human[t]: %s', human[t])
+                #logger.info('human[t]: %s', human[t])
                 
                 i_h, i_w = j_h, j_w
 
@@ -176,8 +182,8 @@ def get_humans_by_feature(delta, x, y, w, h, e, detection_thresh=0.15, min_num_k
     logger.info('alchemy time {:.5f}'.format(time.time() - start))
     logger.info('num humans = {}'.format(len(humans)))
 
-    if len(humans) >0:
-        logger.info("human detected!")
+#    if len(humans) >0:
+#        logger.info("human detected!")
     return humans, scores
 # NMS
 def non_maximum_suppression(bbox, thresh, score=None, limit=None):
@@ -340,22 +346,16 @@ def show_sample(inputs, target, result):
 def evaluation(list_):
     # file_name
     fname_list = list_[0]
-
     # gt_key points
     gt_kps_list = list_[1]
-
     # humans
     humans_list = list_[2]
-
     # scores
     scores_list = list_[3]
-
     # gt bboxes
     gt_bboxes_list = list_[4]
-
     # is_visible
     is_visible_list = list_[5]
-
     # size
     size_list = list_[6]
 
@@ -504,8 +504,6 @@ def evaluation(list_):
         logger.info('head: {}\tshoulder: {}\tankle: {}\telbow: {}\twrist: {}\thip: {}\n\n'.format(pck_head, pck_shoulder, pck_ankle, pck_elbow, pck_wrist, pck_hip))
 
     # Mean Average Precision
-    
-    # Make dictionary
     gtFramesAll = []
     prFramesAll = []
     
@@ -520,8 +518,8 @@ def evaluation(list_):
         pred_data["image"].append(fname)
         gt_data["image"].append(fname)
 
-        print("empty person check:", humans)
-        sys.stdout.flush() 
+#        print("empty person check:", humans)
+#        sys.stdout.flush() 
 
         for person , score in zip(humans, scores):
             # head keypoints
@@ -530,6 +528,7 @@ def evaluation(list_):
             pp = {'x1':[x1], 'y1':[y1], 'x2':[x2], 'y2':[y2], 'score':[score[0]],'annopoints':[{"point":[]}]}
             for num in range(1,len(KEYPOINT_NAMES)): # others
                 if num in person:
+                    # Restore center point
                     y = (person[num][0] + person[num][2]) / 2
                     x = (person[num][1] + person[num][3]) / 2
                     s = score[num]
@@ -540,17 +539,14 @@ def evaluation(list_):
                 p = {'id':[num-1], 'x':[x], 'y': [y], 'score':[s]}
                 pp['annopoints'][0]['point'].append(p)
 
-        pred_data['annorect'].append(pp)
+            pred_data['annorect'].append(pp)
 
+#        print("# pred_data['annorect'].append(pp)", len(pred_data['annorect']))
+#        print("# gt bboxes:", len(gt_bboxes)) 
+#        print("# gt keypoints:", len(gt_kps)) 
+#        sys.stdout.flush() 
 
-        print("# gt bboxes:", len(gt_bboxes)) 
-        print("# gt keypoints:", len(gt_kps)) 
-        sys.stdout.flush() 
         for person , keypoints in zip(gt_bboxes, gt_kps):
-
-            print("person:", person)
-            sys.stdout.flush() 
-
             cx, cy, w, h = person
             x1 = cx - w//2
             x2 = cx + w//2
@@ -561,10 +557,10 @@ def evaluation(list_):
 
             for idx, pt in enumerate(keypoints):
                 gtpt = {'id':[idx], 'x':[pt[0]], 'y': [pt[1]]}
+                gtperson['annopoints'][0]['point'].append(gtpt)
 
-            gtperson['annopoints'][0]['point'].append(gtpt)
 
-        gt_data['annorect'].append(gtperson)
+            gt_data['annorect'].append(gtperson)
 
         pred_list['annolist'].append(pred_data)
         gt_list['annolist'].append(gt_data)
@@ -583,13 +579,15 @@ def evaluation(list_):
 
     # compute AP
     print("Evaluation of per-frame multi-person pose estimation")
-    apAll,preAll,recAll = evaluateAP(gtFramesAll,prFramesAll, True)
+    apAll,preAll,recAll = evaluateAP(gtFramesAll,prFramesAll, False)
 
     # print AP
     print("Average Precision (AP) metric:")
     eval_helpers.printTable(apAll)
 
+    ap_vals = eval_helpers.getCum(apAll)
 
+    return ap_vals
 
 
 if __name__== '__main__':

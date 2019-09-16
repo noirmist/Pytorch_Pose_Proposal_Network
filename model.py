@@ -107,34 +107,16 @@ class PoseProposalNet(nn.Module):
         resnet_out = self.basicblock1(resnet_out)
         resnet_out = self.basicblock2(resnet_out)
 
-#        conv1_out = self.conv1(resnet_out)
-#        #bn1 = self.bn(conv1_out)
-#        #lRelu1 = self.lRelu(bn1)
-#        lRelu1 = self.lRelu(conv1_out)
-#        drp1 = self.dropout5(lRelu1)
-#
-#        conv2_out = self.conv2(drp1)
-#        lRelu2 = self.lRelu(conv2_out)
-#        drp2 = self.dropout(lRelu2)
-#
-#        conv3_out = self.conv3(drp2)
-#        out = self.sigmoid(conv3_out)
-#        #out = self.Relu(conv3_out)
-
         conv1_out = self.conv1(resnet_out)
         bn1 = self.bn1(conv1_out)
-        #Gelu1 = self.Gelu(bn1)
         lRelu1 = self.lRelu(bn1)
 
         conv2_out = self.conv2(lRelu1)
         bn2 = self.bn2(conv2_out)
-        #Gelu2 = self.Gelu(bn2)
         lRelu2 = self.lRelu(bn2)
-        #drp2 = self.dropout5(Gelu2)
 
         conv3_out = self.conv3(lRelu2)
         out = self.sigmoid(conv3_out)
-        #out = self.conv3(drp2)
 
         return out
 

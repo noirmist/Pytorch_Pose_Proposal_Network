@@ -85,7 +85,7 @@ def getHeadSize(x1,y1,x2,y2):
 
 
 def formatCell(val,delim):
-    return "{:>5}".format("%1.1f" % val) + delim
+    return "{:>5}".format("%1.2f" % val) + delim
 
 
 def getHeader():
@@ -133,7 +133,6 @@ def printTable(vals):
 
 # compute recall/precision curve (RPC) values
 def computeRPC(scores,labels,totalPos):
-
     precision = np.zeros(len(scores))
     recall    = np.zeros(len(scores))
     npos = 0;
@@ -371,7 +370,7 @@ def assignGTmulti(gtFrames, prFrames, distThresh):
                 pointsGT = rectGT["annopoints"][0]["point"]
             # iterate over all possible body joints
             for i in range(nJoints):
-                # GT joint in LSP format
+                # GT joint in MPII format
                 ppGT = getPointGTbyID(pointsGT, i)
                 if len(ppGT) > 0:
                     hasGT[ridxGT, i] = True
@@ -382,7 +381,7 @@ def assignGTmulti(gtFrames, prFrames, distThresh):
             rectPr = prFrames[imgidx]["annorect"][ridxPr]
             pointsPr = rectPr["annopoints"][0]["point"]
             for i in range(nJoints):
-                # predicted joint in LSP format
+                # predicted joint in MPII format
                 ppPr = getPointGTbyID(pointsPr, i)
                 if len(ppPr) > 0:
                     if not ("score" in ppPr.keys()):
