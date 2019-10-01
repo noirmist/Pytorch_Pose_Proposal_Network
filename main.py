@@ -327,8 +327,10 @@ def main():
     local_grid_size=(21, 21)
 
     # Detach under avgpoll layer in Resnet
-    modules = list(model.children())[:-3]
-    model = nn.Sequential(*modules)
+    # Resnet 600 epoch AP 50
+    # modules = list(model.children())[:-3]
+    # model = nn.Sequential(*modules)
+
     model = PoseProposalNet(model, local_grid_size=local_grid_size)
 
     if args.sync_bn:
@@ -347,7 +349,9 @@ def main():
 
     # Weight model
     weight_model = nn.Linear(5,1, bias=False).cuda()
-    weight_model.weight.data.fill_(1.0)
+    #weight_model.weight.data.fill_(1.0)
+    #0919 weight initial value increase
+    weight_model.weight.data.fill_(2.0)
 
 
     # Test model to get outsize
@@ -436,7 +440,7 @@ def main():
 
     train_dataset = KeypointsDataset(json_file = args.train_file, root_dir = args.root_dir,
                     transform=transforms.Compose([
-                        IAA(insize,'val'),
+                        IAA(insize,'train'),
                         ToNormalizedTensor()
                     ]), 
                     draw=False,
@@ -502,11 +506,10 @@ def main():
 
     # Start trainin iterations
     print("Training start")
-
-    #base = get_baseloss(train_loader, model, criterion)
-
-    base = [torch.tensor([3911.7922]).cuda(), torch.tensor([18.1335]).cuda(),torch.tensor([24.9189]).cuda(),torch.tensor([31.3605]).cuda(),torch.tensor([13727.9912]).cuda()]
+    sys.stdout.flush()
+    #base = [torch.tensor([3911.7922]).cuda(), torch.tensor([18.1335]).cuda(),torch.tensor([24.9189]).cuda(),torch.tensor([31.3605]).cuda(),torch.tensor([13727.9912]).cuda()]
             
+    base = get_baseloss(train_loader, model, criterion)
     print("base loss:", base)
     
     for epoch in range(args.start_epoch, args.epochs):
@@ -520,7 +523,14 @@ def main():
         train_epoch_loss = train(train_loader, model, weight_model, criterion, optimizerM, optimizerR, epoch, args, base)
 
         # evaluate on validation set
-        epoch_loss ap_vals = validate(val_loader, model, weight_model, criterion, epoch, args)
+        epoch_loss, ap_vals = validate(val_loader, val_dataset,  model, weight_model, criterion, outsize, local_grid_size, epoch, args)
+
+        print('Val Epoch: [{0}]\t'
+                'Total AP: {totap:.4f}, Head: {head:.4f},  Shou: {shou:.4f}, Elb: {elb:.4f}, '
+                'Wri: {wri:.4f}, Hip: {hip:.4f}, Knee: {knee:.4f}, Ankl: {ankl:.4f} '.format(epoch+1, 
+                totap= ap_vals[7], head= ap_vals[0], shou= ap_vals[1], elb = ap_vals[2], wri = ap_vals[3],
+                hip= ap_vals[4], knee= ap_vals[5], ankl= ap_vals[6]))
+        sys.stdout.flush()
 
         # remember best acc@1 and save checkpoint
         if args.local_rank == 0:
@@ -540,7 +550,7 @@ def main():
             #is_best = epoch_loss < best_AP
 
             is_best = ap_vals[7] < best_AP
-            best_AP = max(ap_vals[7] best_AP)
+            best_AP = max(ap_vals[7], best_AP)
 
             print("checkpoints checking")
             save_checkpoint({
@@ -799,17 +809,18 @@ def train(train_loader, model, weight_model, criterion, optimizerM, optimizerR, 
         param = list(model.parameters())
 
         # 0 -> -8 : conv2 weight
-        G0R = torch.autograd.grad(l0, param[-8], retain_graph=True, create_graph=True)
-        G1R = torch.autograd.grad(l1, param[-8], retain_graph=True, create_graph=True)
-        G2R = torch.autograd.grad(l2, param[-8], retain_graph=True, create_graph=True)
-        G3R = torch.autograd.grad(l3, param[-8], retain_graph=True, create_graph=True)
-        G4R = torch.autograd.grad(l4, param[-8], retain_graph=True, create_graph=True)
+#        G0R = torch.autograd.grad(l0, param[-8], retain_graph=True, create_graph=True)
+#        G1R = torch.autograd.grad(l1, param[-8], retain_graph=True, create_graph=True)
+#        G2R = torch.autograd.grad(l2, param[-8], retain_graph=True, create_graph=True)
+#        G3R = torch.autograd.grad(l3, param[-8], retain_graph=True, create_graph=True)
+#        G4R = torch.autograd.grad(l4, param[-8], retain_graph=True, create_graph=True)
 
-#        G0R = torch.autograd.grad(l0, param[-9], retain_graph=True, create_graph=True)
-#        G1R = torch.autograd.grad(l1, param[-9], retain_graph=True, create_graph=True)
-#        G2R = torch.autograd.grad(l2, param[-9], retain_graph=True, create_graph=True)
-#        G3R = torch.autograd.grad(l3, param[-9], retain_graph=True, create_graph=True)
-#        G4R = torch.autograd.grad(l4, param[-9], retain_graph=True, create_graph=True)
+        # 0 -> -9 : conv1 weight
+        G0R = torch.autograd.grad(l0, param[-9], retain_graph=True, create_graph=True)
+        G1R = torch.autograd.grad(l1, param[-9], retain_graph=True, create_graph=True)
+        G2R = torch.autograd.grad(l2, param[-9], retain_graph=True, create_graph=True)
+        G3R = torch.autograd.grad(l3, param[-9], retain_graph=True, create_graph=True)
+        G4R = torch.autograd.grad(l4, param[-9], retain_graph=True, create_graph=True)
 
         G0 = torch.norm(G0R[0], 2)
         G1 = torch.norm(G1R[0], 2)
@@ -904,6 +915,13 @@ def train(train_loader, model, weight_model, criterion, optimizerM, optimizerR, 
                     reduced_loss_size = loss_size.detach()
                     reduced_loss_limb = loss_limb.detach()
 
+                    # Weightlosses
+                    reduced_weightloss_resp = weight_model.weight[0][0].detach()
+                    reduced_weightloss_iou = weight_model.weight[0][1].detach()
+                    reduced_weightloss_coor = weight_model.weight[0][2].detach()
+                    reduced_weightloss_size = weight_model.weight[0][3].detach()
+                    reduced_weightloss_limb = weight_model.weight[0][4].detach()
+
                 # measure accuracy and record loss
                 if args.distributed:
                     losses.update(to_python_float(reduced_loss), img.size(0))
@@ -927,6 +945,12 @@ def train(train_loader, model, weight_model, criterion, optimizerM, optimizerR, 
                     losses_coor.update(loss_coor.item(), img.size(0))
                     losses_size.update(loss_size.item(), img.size(0))
                     losses_limb.update(loss_limb.item(), img.size(0))
+
+                    weightlosses_resp.update(reduced_weightloss_resp.item(), img.size(0))
+                    weightlosses_iou.update(reduced_weightloss_iou.item(), img.size(0))
+                    weightlosses_coor.update(reduced_weightloss_coor.item(), img.size(0))
+                    weightlosses_size.update(reduced_weightloss_size.item(), img.size(0))
+                    weightlosses_limb.update(reduced_weightloss_limb.item(), img.size(0))
 
                 torch.cuda.synchronize()
 
@@ -1201,7 +1225,7 @@ def test_output(val_loader, val_dataset, model, weight_model,  criterion, outsiz
         _ = evaluation(pck_object)
 
 
-def validate(val_loader, val_dataset,  model, weight_model, criterion, epoch, args):
+def validate(val_loader, val_dataset,  model, weight_model, criterion, outsize, local_grid_size, epoch, args):
     from datatest import get_humans_by_feature, draw_humans, show_sample, evaluation
 
     batch_time = AverageMeter()
