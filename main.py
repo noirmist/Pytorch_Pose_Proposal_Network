@@ -538,7 +538,7 @@ def main():
 
             #is_best = epoch_loss < best_AP
 
-            is_best = ap_vals[7] < best_AP
+            is_best = ap_vals[7] > best_AP
             best_AP = max(ap_vals[7], best_AP)
 
             print("checkpoints checking")
@@ -999,7 +999,7 @@ def train(train_loader, model, weight_model, criterion, optimizerM, optimizerR, 
 def test_output(val_loader, val_dataset, model, weight_model,  criterion, outsize, local_grid_size, args):
     from datatest import get_humans_by_feature, draw_humans, show_sample, evaluation
     # Process with one batch
-    data_time = AverageMeter()
+    inference_time = AverageMeter()
 
     # revert normalized image to original image
     mean = torch.tensor([0.485 , 0.456 , 0.406 ]).cuda().view(1,3,1,1)
@@ -1013,9 +1013,9 @@ def test_output(val_loader, val_dataset, model, weight_model,  criterion, outsiz
     pck_object = [[], [], [], [], [], [], []] 
 
     with torch.no_grad():
-        end=time.time()
 
         for i, samples in enumerate(val_loader):
+            end=time.time()
             # measure data loading time
             img = samples.image.cuda()
             delta = samples.delta.cuda()
@@ -1179,6 +1179,7 @@ def test_output(val_loader, val_dataset, model, weight_model,  criterion, outsiz
 
             # basic detection_thresh = 0.15
             humans, scores = get_humans_by_feature(resp, x, y, w, h, e, detection_thresh=0.15)
+            inference_time.update(time.time() - end)
 
             # PCKh metric
             fname = val_dataset.filename_list[i]
@@ -1218,12 +1219,15 @@ def test_output(val_loader, val_dataset, model, weight_model,  criterion, outsiz
                 pil_image.save('output/training_test/predict_test_result_'+str(i)+'.png', 'PNG')
                 sample_fig.savefig('output/training_test/predict_test_resp_result_'+str(i)+'.png')
 
-            if i>= 10:
+            #if i>= 10:
 #                print("gt_kps", pck_object[1])
 #                print("gt_bbox", pck_object[4])
 #                print("human", pck_object[2])
 #                print("size", pck_object[6])
-                break
+            #    break
+
+        print('Average Inference Time: {inference_time.avg:.3f})'.format(inference_time=inference_time))
+        sys.stdout.flush()
 
         _ = evaluation(pck_object)
 
