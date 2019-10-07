@@ -47,6 +47,7 @@ from PIL import Image
 from visdom import Visdom
 
 #Custom models
+import drn #dilated residual network
 from model import *
 from config import *
 from dataset import *
@@ -314,30 +315,18 @@ def main():
     assert torch.backends.cudnn.enabled, "Amp requires cudnn backend to be enabled."
 
     # create model
-    if args.pretrained:
-        print("=> using pre-trained model '{}'".format(args.arch))
-        model = models.__dict__[args.arch](pretrained=True)
-        
-    else:
-        print("=> creating model '{}'".format(args.arch))
-        model = models.__dict__[args.arch]()
+
+    model = drn.drn_d_22(args.pretrained)
    
 
     #TODO Hardcoding local grid size
     local_grid_size=(21, 21)
 
     # Detach under avgpoll layer in Resnet
-    # Resnet 600 epoch AP 50
-    # modules = list(model.children())[:-3]
-    # model = nn.Sequential(*modules)
 
+    modules = list(model.children())[:-2]
+    model = nn.Sequential(*modules)
     model = PoseProposalNet(model, local_grid_size=local_grid_size)
-
-    if args.sync_bn:
-        import apex
-        print("using apex synced BN")
-        model = apex.parallel.convert_syncbn_model(model) 
-
     model = model.cuda()
 
 
@@ -507,9 +496,9 @@ def main():
     # Start trainin iterations
     print("Training start")
     sys.stdout.flush()
-    #base = [torch.tensor([3911.7922]).cuda(), torch.tensor([18.1335]).cuda(),torch.tensor([24.9189]).cuda(),torch.tensor([31.3605]).cuda(),torch.tensor([13727.9912]).cuda()]
+    base = [torch.tensor([3911.7922]).cuda(), torch.tensor([18.1335]).cuda(),torch.tensor([24.9189]).cuda(),torch.tensor([31.3605]).cuda(),torch.tensor([13727.9912]).cuda()]
             
-    base = get_baseloss(train_loader, model, criterion)
+    #base = get_baseloss(train_loader, model, criterion)
     print("base loss:", base)
     
     for epoch in range(args.start_epoch, args.epochs):
@@ -703,6 +692,7 @@ def get_baseloss(train_loader, model, criterion):
 
     model.eval()
     print("Get baseloss!")
+    sys.stdout.flush()
     for samples in tqdm(train_loader):
         # measure data loading time
         img = samples.image.cuda()
@@ -822,6 +812,13 @@ def train(train_loader, model, weight_model, criterion, optimizerM, optimizerR, 
         G3R = torch.autograd.grad(l3, param[-9], retain_graph=True, create_graph=True)
         G4R = torch.autograd.grad(l4, param[-9], retain_graph=True, create_graph=True)
 
+        # -9 -> -24 : basicblock1 weight
+#        G0R = torch.autograd.grad(l0, param[-24], retain_graph=True, create_graph=True)
+#        G1R = torch.autograd.grad(l1, param[-24], retain_graph=True, create_graph=True)
+#        G2R = torch.autograd.grad(l2, param[-24], retain_graph=True, create_graph=True)
+#        G3R = torch.autograd.grad(l3, param[-24], retain_graph=True, create_graph=True)
+#        G4R = torch.autograd.grad(l4, param[-24], retain_graph=True, create_graph=True)
+
         G0 = torch.norm(G0R[0], 2)
         G1 = torch.norm(G1R[0], 2)
         G2 = torch.norm(G2R[0], 2)
@@ -884,7 +881,13 @@ def train(train_loader, model, weight_model, criterion, optimizerM, optimizerR, 
             weight_model.weight.clamp_(min=0.0)
 
             # Normalized weight value
-            weight_model.weight.div_(torch.mean(weight_model.weight))
+            weight_model.weight.div_(torch.mean(weight_model.weight)/2)
+            # min max normalization
+#            w_min = weight_model.weight.min()
+#            w_max = weight_model.weight.max()
+#            
+#            weight_model.weight.sub_(w_min)
+#            weight_model.weight.div_(w_max-w_min)
 
         del G0R, G1R, G2R, G3R, G4R
 

@@ -5,34 +5,30 @@ from config import *
 import torchvision.models as models
 from gelu import GELU
 
-def conv3x3(in_planes, out_planes, stride=1):
-    """3x3 convolution with padding"""
+def conv3x3(in_planes, out_planes, stride=1, padding=1, dilation=1):
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
-                     padding=1, bias=False)
-
-
-def conv1x1(in_planes, out_planes, stride=1):
-    """1x1 convolution"""
-    return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
-
+                     padding=padding, bias=False, dilation=dilation)
 
 
 class BasicBlock(nn.Module):
-    expansion = 1
+    expansion = 1 
 
-    def __init__(self, inplanes, planes, stride=1, downsample=None):
+    def __init__(self, inplanes, planes, stride=1, downsample=None,
+                 dilation=(1, 1), residual=True):
         super(BasicBlock, self).__init__()
-        # Both self.conv1 and self.downsample layers downsample the input when stride != 1
-        self.conv1 = conv3x3(inplanes, planes, stride)
+        self.conv1 = conv3x3(inplanes, planes, stride,
+                             padding=dilation[0], dilation=dilation[0])
         self.bn1 = nn.BatchNorm2d(planes)
         self.relu = nn.ReLU(inplace=True)
-        self.conv2 = conv3x3(planes, planes)
+        self.conv2 = conv3x3(planes, planes,
+                             padding=dilation[1], dilation=dilation[1])
         self.bn2 = nn.BatchNorm2d(planes)
         self.downsample = downsample
         self.stride = stride
+        self.residual = residual
 
-    def forward(self, x):
-        identity = x
+    def forward(self, x): 
+        residual = x 
 
         out = self.conv1(x)
         out = self.bn1(out)
@@ -42,12 +38,13 @@ class BasicBlock(nn.Module):
         out = self.bn2(out)
 
         if self.downsample is not None:
-            identity = self.downsample(x)
-
-        out += identity
+            residual = self.downsample(x)
+        if self.residual:
+            out += residual
         out = self.relu(out)
 
-        return out
+        return out 
+
 
 class PoseProposalNet(nn.Module):
     def __init__(self, backbone, insize=(384,384), outsize=(24,24), keypoint_names = KEYPOINT_NAMES , local_grid_size= (21,21), edges = EDGES ):
@@ -65,14 +62,16 @@ class PoseProposalNet(nn.Module):
         self.lastsize = 6*(len(self.keypoint_names))+(sW)*(sH)*len(self.edges)
 
         downsample = nn.Sequential(
-                conv1x1(256, 512, 1),
-                nn.BatchNorm2d(512),
-            )
+            nn.Conv2d(512, 512,
+                      kernel_size=1, stride=2, bias=False),
+            nn.BatchNorm2d(512),
+        )
 
-        #ResNet w/o avgpool&fc
+        # Dilated Residual Network without last 2 layer
         self.backbone = backbone
 
-        self.basicblock1 = BasicBlock(256, 512, 1, downsample)
+        # shrink size
+        self.basicblock1 = BasicBlock(512, 512, 2, downsample)
         self.basicblock2 = BasicBlock(512, 512, 1, None)
 
         # modified cnn layer
@@ -84,11 +83,13 @@ class PoseProposalNet(nn.Module):
         self.lRelu = nn.LeakyReLU(0.1)
         self.bn1 = nn.BatchNorm2d(512)
         self.bn2 = nn.BatchNorm2d(512)
-        self.Relu = nn.ReLU()
+
+        self.sigmoid = nn.Sigmoid()
+
+        #self.Relu = nn.ReLU()
 #        self.Gelu = GELU()
 #        self.dropout = nn.Dropout2d(p=0.2)
 #        self.dropout5 = nn.Dropout2d(p=0.5)
-        self.sigmoid = nn.Sigmoid()
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -122,14 +123,16 @@ class PoseProposalNet(nn.Module):
 
 if __name__ == '__main__':
     # create model
-    arch = 'resnet18'
-
-    print("=> creating model '{}'".format(arch))
-    model = models.__dict__[arch]()
+    import drn
+#    arch = 'resnet18'
+#
+#    print("=> creating model '{}'".format(arch))
+#    model = models.__dict__[arch]()
+    model = drn.drn_d_22()
 
     # Detach under avgpoll layer in Resnet
     #modules = list(model.children())[:-4]
-    modules = list(model.children())[:-3]
+    modules = list(model.children())[:-2]
     model = nn.Sequential(*modules)
     model = PoseProposalNet(model, local_grid_size=(21,21))
     print(model)

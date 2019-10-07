@@ -117,7 +117,7 @@ def get_humans_by_feature(delta, x, y, w, h, e, detection_thresh=0.15, min_num_k
     root_bbox = root_bbox[selected]
     #logger.info('root_bbox: %s', root_bbox)
     
-    #logger.info('detect instance {:.5f}'.format(time.time() - start))
+    logger.info('detect instance {:.5f}'.format(time.time() - start))
     start = time.time()
 
     humans = []
@@ -179,8 +179,8 @@ def get_humans_by_feature(delta, x, y, w, h, e, detection_thresh=0.15, min_num_k
         if min_num_keypoints <= len(human) - 1:
             humans.append(human)
             scores.append(score)
-    #logger.info('alchemy time {:.5f}'.format(time.time() - start))
-    #logger.info('num humans = {}'.format(len(humans)))
+    logger.info('alchemy time {:.5f}'.format(time.time() - start))
+    logger.info('num humans = {}'.format(len(humans)))
 
 #    if len(humans) >0:
 #        logger.info("human detected!")
