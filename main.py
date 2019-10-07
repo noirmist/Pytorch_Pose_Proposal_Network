@@ -807,12 +807,19 @@ def train(train_loader, model, weight_model, criterion, optimizerM, optimizerR, 
 #        G4R = torch.autograd.grad(l4, param[-8], retain_graph=True, create_graph=True)
 
         # 0 -> -9 : conv1 weight
-        G0R = torch.autograd.grad(l0, param[-9], retain_graph=True, create_graph=True)
-        G1R = torch.autograd.grad(l1, param[-9], retain_graph=True, create_graph=True)
-        G2R = torch.autograd.grad(l2, param[-9], retain_graph=True, create_graph=True)
-        G3R = torch.autograd.grad(l3, param[-9], retain_graph=True, create_graph=True)
-        G4R = torch.autograd.grad(l4, param[-9], retain_graph=True, create_graph=True)
+#        G0R = torch.autograd.grad(l0, param[-9], retain_graph=True, create_graph=True)
+#        G1R = torch.autograd.grad(l1, param[-9], retain_graph=True, create_graph=True)
+#        G2R = torch.autograd.grad(l2, param[-9], retain_graph=True, create_graph=True)
+#        G3R = torch.autograd.grad(l3, param[-9], retain_graph=True, create_graph=True)
+#        G4R = torch.autograd.grad(l4, param[-9], retain_graph=True, create_graph=True)
 
+        # -9 -> -12 : conv1 weight(delete added basic block)
+        G0R = torch.autograd.grad(l0, param[-12], retain_graph=True, create_graph=True)
+        G1R = torch.autograd.grad(l1, param[-12], retain_graph=True, create_graph=True)
+        G2R = torch.autograd.grad(l2, param[-12], retain_graph=True, create_graph=True)
+        G3R = torch.autograd.grad(l3, param[-12], retain_graph=True, create_graph=True)
+        G4R = torch.autograd.grad(l4, param[-12], retain_graph=True, create_graph=True)
+        
         # -9 -> -24 : basicblock1 weight
 #        G0R = torch.autograd.grad(l0, param[-24], retain_graph=True, create_graph=True)
 #        G1R = torch.autograd.grad(l1, param[-24], retain_graph=True, create_graph=True)

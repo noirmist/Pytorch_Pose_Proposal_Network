@@ -1,4 +1,5 @@
 import torch
+from torchsummary import summary
 import sys
 import torch.nn as nn
 from config import *
@@ -75,14 +76,17 @@ class PoseProposalNet(nn.Module):
         self.basicblock2 = BasicBlock(512, 512, 1, None)
 
         # modified cnn layer
-        self.conv1 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=3//2, bias=False)
-        self.conv2 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=3//2, bias=True)
-        self.conv3 = nn.Conv2d(512, self.lastsize, kernel_size=1, stride=1)
+        #self.conv1 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=3//2, bias=False)
+        self.conv1 = nn.Conv2d(512, 512, kernel_size=3, stride=2, padding= 2, bias=False, dilation=2)
+        self.conv2 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding= 2, bias=False, dilation=2)
+        self.conv3 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=2, bias=True, dilation=2)
+        self.conv4 = nn.Conv2d(512, self.lastsize, kernel_size=1, stride=1)
 
         #self.linear = nn.Linear(144,1024)
         self.lRelu = nn.LeakyReLU(0.1)
         self.bn1 = nn.BatchNorm2d(512)
-        self.bn2 = nn.BatchNorm2d(512)
+        self.bn2= nn.BatchNorm2d(512)
+        self.bn3 = nn.BatchNorm2d(512)
 
         self.sigmoid = nn.Sigmoid()
 
@@ -105,9 +109,10 @@ class PoseProposalNet(nn.Module):
         resnet_out = self.backbone(input)
 
         # Add deleted basicblocks
-        resnet_out = self.basicblock1(resnet_out)
-        resnet_out = self.basicblock2(resnet_out)
-
+#        bscblk1 = self.basicblock1(resnet_out)
+#        bscblk2 = self.basicblock2(bscblk1)
+#
+#        conv1_out = self.conv1(bscblk2)
         conv1_out = self.conv1(resnet_out)
         bn1 = self.bn1(conv1_out)
         lRelu1 = self.lRelu(bn1)
@@ -117,7 +122,11 @@ class PoseProposalNet(nn.Module):
         lRelu2 = self.lRelu(bn2)
 
         conv3_out = self.conv3(lRelu2)
-        out = self.sigmoid(conv3_out)
+        bn3 = self.bn2(conv3_out)
+        lRelu3 = self.lRelu(bn3)
+
+        conv4_out = self.conv4(lRelu3)
+        out = self.sigmoid(conv4_out)
 
         return out
 
@@ -134,15 +143,19 @@ if __name__ == '__main__':
     #modules = list(model.children())[:-4]
     modules = list(model.children())[:-2]
     model = nn.Sequential(*modules)
-    model = PoseProposalNet(model, local_grid_size=(21,21))
-    print(model)
+    model = PoseProposalNet(model, local_grid_size=(21,21)).cuda()
+    for idx, ((name, value), value2) in enumerate(zip(model.named_parameters(),model.parameters())):
+        print(idx, name, value.shape, value2.shape)
 
-    inputs = torch.randn(1,3, 384, 384)
-    #inputs = torch.randn(1,3, 497, 497)
-    #inputs = torch.randn(1,3, 512, 512)
-    y = model(inputs)
-    _, _, outH, outW =y.shape
-    outsize = (outW, outH)
-    print("outsize:",outsize)
-    print("y:",y.shape)
+    #summary(model, (3,384,384))
+    #summary(model, (3,224,224))
+
+#    inputs = torch.randn(1,3, 384, 384)
+#    #inputs = torch.randn(1,3, 497, 497)
+#    #inputs = torch.randn(1,3, 512, 512)
+#    y = model(inputs)
+#    _, _, outH, outW =y.shape
+#    outsize = (outW, outH)
+#    print("outsize:",outsize)
+#    print("y:",y.shape)
 
