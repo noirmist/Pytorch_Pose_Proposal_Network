@@ -338,9 +338,10 @@ def main():
 
     # Weight model
     weight_model = nn.Linear(5,1, bias=False).cuda()
-    #weight_model.weight.data.fill_(1.0)
+    #1007
+    weight_model.weight.data.fill_(1.0)
     #0919 weight initial value increase
-    weight_model.weight.data.fill_(2.0)
+    #weight_model.weight.data.fill_(2.0)
 
 
     # Test model to get outsize
@@ -881,7 +882,10 @@ def train(train_loader, model, weight_model, criterion, optimizerM, optimizerR, 
             weight_model.weight.clamp_(min=0.0)
 
             # Normalized weight value
-            weight_model.weight.div_(torch.mean(weight_model.weight)/2)
+            weight_model.weight.div_(torch.mean(weight_model.weight))
+            # init weight value: 2.0
+            #weight_model.weight.div_(torch.mean(weight_model.weight)/2)
+
             # min max normalization
 #            w_min = weight_model.weight.min()
 #            w_max = weight_model.weight.max()
