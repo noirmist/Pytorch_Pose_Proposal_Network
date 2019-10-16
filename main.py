@@ -497,9 +497,9 @@ def main():
     # Start trainin iterations
     print("Training start")
     sys.stdout.flush()
-    base = [torch.tensor([3911.7922]).cuda(), torch.tensor([18.1335]).cuda(),torch.tensor([24.9189]).cuda(),torch.tensor([31.3605]).cuda(),torch.tensor([13727.9912]).cuda()]
+    #base = [torch.tensor([3911.7922]).cuda(), torch.tensor([18.1335]).cuda(),torch.tensor([24.9189]).cuda(),torch.tensor([31.3605]).cuda(),torch.tensor([13727.9912]).cuda()]
             
-    #base = get_baseloss(train_loader, model, criterion)
+    base = get_baseloss(train_loader, model, criterion)
     print("base loss:", base)
     
     for epoch in range(args.start_epoch, args.epochs):
@@ -813,12 +813,13 @@ def train(train_loader, model, weight_model, criterion, optimizerM, optimizerR, 
 #        G3R = torch.autograd.grad(l3, param[-9], retain_graph=True, create_graph=True)
 #        G4R = torch.autograd.grad(l4, param[-9], retain_graph=True, create_graph=True)
 
-        # -9 -> -12 : conv1 weight(delete added basic block)
-        G0R = torch.autograd.grad(l0, param[-12], retain_graph=True, create_graph=True)
-        G1R = torch.autograd.grad(l1, param[-12], retain_graph=True, create_graph=True)
-        G2R = torch.autograd.grad(l2, param[-12], retain_graph=True, create_graph=True)
-        G3R = torch.autograd.grad(l3, param[-12], retain_graph=True, create_graph=True)
-        G4R = torch.autograd.grad(l4, param[-12], retain_graph=True, create_graph=True)
+        # -9 -> -12 : conv1 weight(delete added basic block) - failed
+        # -9 -> -13 : conv1 weight(add full pre activation, and residual at conv1)
+        G0R = torch.autograd.grad(l0, param[-13], retain_graph=True, create_graph=True)
+        G1R = torch.autograd.grad(l1, param[-13], retain_graph=True, create_graph=True)
+        G2R = torch.autograd.grad(l2, param[-13], retain_graph=True, create_graph=True)
+        G3R = torch.autograd.grad(l3, param[-13], retain_graph=True, create_graph=True)
+        G4R = torch.autograd.grad(l4, param[-13], retain_graph=True, create_graph=True)
         
         # -9 -> -24 : basicblock1 weight
 #        G0R = torch.autograd.grad(l0, param[-24], retain_graph=True, create_graph=True)

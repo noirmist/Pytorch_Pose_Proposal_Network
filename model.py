@@ -31,18 +31,19 @@ class BasicBlock(nn.Module):
     def forward(self, x): 
         residual = x 
 
-        out = self.conv1(x)
-        out = self.bn1(out)
+        out = self.bn1(x)
         out = self.relu(out)
+        out = self.conv1(out)
 
-        out = self.conv2(out)
         out = self.bn2(out)
+        out = self.relu(out)
+        out = self.conv2(out)
 
         if self.downsample is not None:
             residual = self.downsample(x)
         if self.residual:
             out += residual
-        out = self.relu(out)
+        #out = self.relu(out)
 
         return out 
 
@@ -76,17 +77,28 @@ class PoseProposalNet(nn.Module):
         self.basicblock2 = BasicBlock(512, 512, 1, None)
 
         # modified cnn layer
-        #self.conv1 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=3//2, bias=False)
-        self.conv1 = nn.Conv2d(512, 512, kernel_size=3, stride=2, padding= 2, bias=False, dilation=2)
-        self.conv2 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding= 2, bias=False, dilation=2)
-        self.conv3 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=2, bias=True, dilation=2)
-        self.conv4 = nn.Conv2d(512, self.lastsize, kernel_size=1, stride=1)
+        self.conv1x1_1 = nn.Conv2d(512, 128, kernel_size=1, stride=1, padding=1//2, bias=False)
+        self.conv1x1_2 = nn.Conv2d(128, 512, kernel_size=1, stride=1, padding=1//2, bias=False)
+
+        self.conv1 = nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=3//2, bias=False)
+        self.conv2 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=3//2, bias=True)
+        self.conv3 = nn.Conv2d(512, self.lastsize, kernel_size=1, stride=1)
+
+        # dilated add conv(failed)
+#        self.conv1 = nn.Conv2d(512, 512, kernel_size=3, stride=2, padding= 2, bias=False, dilation=2)
+#        self.conv2 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding= 2, bias=False, dilation=2)
+#        self.conv3 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=2, bias=True, dilation=2)
+#        self.conv4 = nn.Conv2d(512, self.lastsize, kernel_size=1, stride=1)
 
         #self.linear = nn.Linear(144,1024)
         self.lRelu = nn.LeakyReLU(0.1)
-        self.bn1 = nn.BatchNorm2d(512)
-        self.bn2= nn.BatchNorm2d(512)
-        self.bn3 = nn.BatchNorm2d(512)
+
+        self.bn0_1 = nn.BatchNorm2d(512)
+        self.bn0_2 = nn.BatchNorm2d(128)
+
+        self.bn1 = nn.BatchNorm2d(128)
+        self.bn2 = nn.BatchNorm2d(512)
+        #self.bn3 = nn.BatchNorm2d(512)
 
         self.sigmoid = nn.Sigmoid()
 
@@ -109,24 +121,37 @@ class PoseProposalNet(nn.Module):
         resnet_out = self.backbone(input)
 
         # Add deleted basicblocks
-#        bscblk1 = self.basicblock1(resnet_out)
-#        bscblk2 = self.basicblock2(bscblk1)
-#
-#        conv1_out = self.conv1(bscblk2)
-        conv1_out = self.conv1(resnet_out)
-        bn1 = self.bn1(conv1_out)
-        lRelu1 = self.lRelu(bn1)
+        resnet_out = self.basicblock1(resnet_out)
+        resnet_out = self.basicblock2(resnet_out)
 
-        conv2_out = self.conv2(lRelu1)
+        # Add last residual module + full pre activation
+        conv1_out = self.bn0_1(resnet_out)
+        conv1_out = self.lRelu(conv1_out)
+        conv1_out = self.conv1x1_1(conv1_out)
+        
+        conv1_out = self.bn1(conv1_out)
+        conv1_out = self.lRelu(conv1_out)
+        conv1_out = self.conv1(conv1_out)
+        
+
+        conv1_out = self.bn0_2(conv1_out)
+        conv1_out = self.lRelu(conv1_out)
+        conv1_out = self.conv1x1_2(conv1_out)
+
+        conv1_out += resnet_out
+
+        conv2_out = self.conv2(conv1_out)
         bn2 = self.bn2(conv2_out)
         lRelu2 = self.lRelu(bn2)
 
         conv3_out = self.conv3(lRelu2)
-        bn3 = self.bn2(conv3_out)
-        lRelu3 = self.lRelu(bn3)
+        out = self.sigmoid(conv3_out)
 
-        conv4_out = self.conv4(lRelu3)
-        out = self.sigmoid(conv4_out)
+#        bn3 = self.bn2(conv3_out)
+#        lRelu3 = self.lRelu(bn3)
+#
+#        conv4_out = self.conv4(lRelu3)
+#        out = self.sigmoid(conv4_out)
 
         return out
 
@@ -147,7 +172,7 @@ if __name__ == '__main__':
     for idx, ((name, value), value2) in enumerate(zip(model.named_parameters(),model.parameters())):
         print(idx, name, value.shape, value2.shape)
 
-    #summary(model, (3,384,384))
+    summary(model, (3,384,384))
     #summary(model, (3,224,224))
 
 #    inputs = torch.randn(1,3, 384, 384)
