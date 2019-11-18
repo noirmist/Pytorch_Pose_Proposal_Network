@@ -1222,7 +1222,7 @@ def test_output(val_loader, val_dataset, model, weight_model,  criterion, outsiz
                     pil_image=raw_pil_image.copy(),
                     humans=humans,
                     visbbox= False,
-                    gridOn = True
+                    gridOn = False
                 )   
 
                 #sample_fig = show_sample(raw_pil_image, delta[0], pil_image)
