@@ -224,7 +224,7 @@ def draw_humans(keypoint_names, edges, pil_image, humans, mask=None, visbbox=Fal
     start = time.time()
     drawer = ImageDraw.Draw(pil_image)
     for human in humans:
-        logger.info("human : %s", human.items())
+        #logger.info("human : %s", human.items())
         
         for k, b in human.items():
             if mask:
@@ -291,7 +291,7 @@ def draw_humans(keypoint_names, edges, pil_image, humans, mask=None, visbbox=Fal
             drawer.line(line, fill=(110, 110, 110), width=1)
 
 
-    logger.info('draw humans {: .5f}'.format(time.time() - start))
+    #logger.info('draw humans {: .5f}'.format(time.time() - start))
     return pil_image
 
 
