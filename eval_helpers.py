@@ -199,33 +199,10 @@ def process_arguments(argv):
 
     return gt_file, pred_file, mode
 
-#def load_data(argv):
-#
-#    dataDir = get_data_dir()
-#
-#    gt_file, pred_file, mode = process_arguments(argv)
-#    gtFilename = dataDir + gt_file
-#    predFilename = dataDir + pred_file
-#
-#    # load ground truth (GT)
-#    with open(gtFilename) as data_file:
-#            data = json.load(data_file)
-#    gtFramesAll = data
-#
-#    # load predictions
-#    with open(predFilename) as data_file:
-#            data = json.load(data_file)
-#    prFramesAll = data
-#
-#    return gtFramesAll, prFramesAll
-
-
 def cleanupData(gtFramesAll,prFramesAll):
 
     # remove all GT frames with empty annorects and remove corresponding entries from predictions
     imgidxs = []
-    #print("gtFramesAll:", gtFramesAll)
-    #sys.stdout.flush()
 
     for imgidx in range(len(gtFramesAll)):
         if (len(gtFramesAll[imgidx]["annorect"]) > 0):

@@ -84,13 +84,6 @@ class PoseProposalNet(nn.Module):
         self.conv2 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=3//2, bias=True)
         self.conv3 = nn.Conv2d(512, self.lastsize, kernel_size=1, stride=1)
 
-        # dilated add conv(failed)
-#        self.conv1 = nn.Conv2d(512, 512, kernel_size=3, stride=2, padding= 2, bias=False, dilation=2)
-#        self.conv2 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding= 2, bias=False, dilation=2)
-#        self.conv3 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=2, bias=True, dilation=2)
-#        self.conv4 = nn.Conv2d(512, self.lastsize, kernel_size=1, stride=1)
-
-        #self.linear = nn.Linear(144,1024)
         self.lRelu = nn.LeakyReLU(0.1)
 
         self.bn0_1 = nn.BatchNorm2d(512)
@@ -98,14 +91,8 @@ class PoseProposalNet(nn.Module):
 
         self.bn1 = nn.BatchNorm2d(128)
         self.bn2 = nn.BatchNorm2d(512)
-        #self.bn3 = nn.BatchNorm2d(512)
 
         self.sigmoid = nn.Sigmoid()
-
-        #self.Relu = nn.ReLU()
-#        self.Gelu = GELU()
-#        self.dropout = nn.Dropout2d(p=0.2)
-#        self.dropout5 = nn.Dropout2d(p=0.5)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -116,7 +103,6 @@ class PoseProposalNet(nn.Module):
 
     def forward(self, input):
 
-        #print("input type:", input.dtype)
         # load resnet 
         resnet_out = self.backbone(input)
 
@@ -147,25 +133,14 @@ class PoseProposalNet(nn.Module):
         conv3_out = self.conv3(lRelu2)
         out = self.sigmoid(conv3_out)
 
-#        bn3 = self.bn2(conv3_out)
-#        lRelu3 = self.lRelu(bn3)
-#
-#        conv4_out = self.conv4(lRelu3)
-#        out = self.sigmoid(conv4_out)
-
         return out
 
 if __name__ == '__main__':
     # create model
     import drn
-#    arch = 'resnet18'
-#
-#    print("=> creating model '{}'".format(arch))
-#    model = models.__dict__[arch]()
     model = drn.drn_d_22()
 
     # Detach under avgpoll layer in Resnet
-    #modules = list(model.children())[:-4]
     modules = list(model.children())[:-2]
     model = nn.Sequential(*modules)
     model = PoseProposalNet(model, local_grid_size=(21,21)).cuda()
@@ -173,14 +148,3 @@ if __name__ == '__main__':
         print(idx, name, value.shape, value2.shape)
 
     summary(model, (3,384,384))
-    #summary(model, (3,224,224))
-
-#    inputs = torch.randn(1,3, 384, 384)
-#    #inputs = torch.randn(1,3, 497, 497)
-#    #inputs = torch.randn(1,3, 512, 512)
-#    y = model(inputs)
-#    _, _, outH, outW =y.shape
-#    outsize = (outW, outH)
-#    print("outsize:",outsize)
-#    print("y:",y.shape)
-

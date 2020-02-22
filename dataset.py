@@ -41,8 +41,6 @@ class KeypointsDataset(Dataset):
 
         for filename in np.unique([anno['file_name'] for anno in self.annotations]):
             self.data[filename] = [], [], [], []
-            #self.data[filename] = [], [], [], [], [] # People
-
         min_num_keypoints = 1
 
         for anno in self.annotations:
@@ -54,9 +52,7 @@ class KeypointsDataset(Dataset):
             entry[1].append(np.array(anno['bbox']))  # cx, cy, w, h for head
             entry[2].append(np.array(is_visible, dtype=np.bool))
             entry[3].append(anno['size'])
-            #entry[4].append(np.array(anno['person']))  # cx, cy, w, h for person
 
-        # for encoding
         self.insize = insize
         self.outsize = outsize
         self.keypoint_names = keypoint_names
@@ -81,14 +77,7 @@ class KeypointsDataset(Dataset):
         bboxes = self.data[fname][1]    # [center_x, center_y , width, height] for head
         is_visible = self.data[fname][2]
         size = self.data[fname][3]
-        #people = self.data[fname][4]    # [center_x, center_y , width, height] for person instance
-
-        #print("is_visible:", is_visible[0].shape)
-        #sample = {'image': image, 'keypoints': keypoints, 'bbox': bboxes, 'is_visible':is_visible, 'size': size, 'name': img_name , 'ppl': people}
         sample = {'image': image, 'keypoints': keypoints, 'bbox': bboxes, 'is_visible':is_visible, 'size': size, 'name': img_name}
-
-#        print("test file name:", self.filename_list[idx])
-#        sys.stdout.flush()
           
         if self.transform:
             sample = self.transform(sample)
@@ -103,7 +92,6 @@ class KeypointsDataset(Dataset):
         bbox = sample['bbox']
         is_visible = sample['is_visible']
         size = sample['size']
-        #people = sample['ppl']
 
         K = len(self.keypoint_names)
 
@@ -117,14 +105,9 @@ class KeypointsDataset(Dataset):
             self.local_grid_size[1], self.local_grid_size[0],
             self.outH, self.outW), dtype=np.float32)
 
-        #for (cx, cy, w, h), (pcx, pcy, pw, ph), points, labeled, parts in zip(bbox, people, keypoints, is_visible, size):
         for (cx, cy, w, h), points, labeled, parts in zip(bbox, keypoints, is_visible, size):
             partsW, partsH = parts, parts
             instanceW, instanceH = w, h
-            #partsW, partsH = self.parts_scale * math.sqrt(w * w + h * h)
-            #instanceW, instanceH = self.instance_scale * math.sqrt(w * w + h * h)
-
-            #points = [torch.tensor([cx.item(), cy.item()])] + list(points) + [torch.tensor([pcx.item(), pcy.item()])]
             points = [torch.tensor([cx.item(), cy.item()])] + list(points) 
             
             # bbox
@@ -212,10 +195,8 @@ class KeypointsDataset(Dataset):
         te = torch.from_numpy(te)
         tx_half = torch.from_numpy(tx_half)
         ty_half = torch.from_numpy(ty_half)
-        #vis = torch.FloatTensor(is_visible)
 
         del sample
-        #return [image, delta, weight, weight_ij, tx, ty, tx_half, ty_half, tw, th, te, vis]
         return [image, delta, weight, weight_ij, tx, ty, tx_half, ty_half, tw, th, te]
 
     # Visutalization
@@ -246,27 +227,11 @@ class KeypointsDataset(Dataset):
                              fill=None,
                              outline=COLOR_MAP[KEYPOINT_NAMES[k]])
 
-#        for (cx1,cy1,w,h) in people:
-#            k = len(KEYPOINT_NAMES) - 1
-#            xmin = cx1 - w//2
-#            ymin = cy1 - h//2
-#            xmax = cx1 + w//2
-#            ymax = cy1 + h//2
-#
-#            drawer.rectangle(xy=[xmin, ymin, xmax, ymax],
-#                             fill=None,
-#                             outline=COLOR_MAP[KEYPOINT_NAMES[k]])
-#            drawer.rectangle(xy=[xmin+1, ymin+1, xmax-1, ymax-1],
-#                             fill=None,
-#                             outline=COLOR_MAP[KEYPOINT_NAMES[k]])
-
-
         pil_image.save("/media/hci-gpu/hdd/PPN/input_check/"+fname) 
 
 
 class CustomBatch:
     def __init__(self, datas):
-        # [image, delta, weight, weight_ij, tx, ty, tx_half, ty_half, tw, th, te, is_visible]
         data = list(zip(*datas))
 
         # Stack data 
@@ -281,19 +246,6 @@ class CustomBatch:
         self.tw = torch.stack(data[8], 0)
         self.th = torch.stack(data[9], 0)
         self.te = torch.stack(data[10], 0)
-        # is_visible
-        #self.vis = torch.stack(data[11], 0)
-
-    #    print("collate_fn_shape: image", image.shape)
-    #    sys.stdout.flush()
-    #    print("delta", delta.shape)
-    #    print("max_delta_ij", max_delta_ij.shape)
-    #    print("max_delta_ij", np.unique(max_delta_ij.numpy()))
-    #    print("tx", tx.shape)
-    #    print("ty", ty.shape)
-    #    print("tw", tw.shape)
-    #    print("th", th.shape)
-    #    print("te", te.shape)
 
     def pin_memory(self):
         self.image = self.image.pin_memory()
@@ -308,11 +260,7 @@ class CustomBatch:
         self.th = self.th.pin_memory()
         self.te = self.te.pin_memory()
 
-        # is_visible
-        #self.vis = self.vis.pin_memory()
-
         return self
 
 def custom_collate_fn(batch):
     return CustomBatch(batch)
- 
