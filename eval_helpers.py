@@ -370,8 +370,8 @@ def assignGTmulti(gtFrames, prFrames, distThresh):
                         score[ridxPr, i] = ppPr["score"][0]
                     hasPr[ridxPr, i] = True
 
+        # if predictions and GT are present
         if len(prFrames[imgidx]["annorect"]) and len(gtFrames[imgidx]["annorect"]):
-            # predictions and GT are present
             # iterate over GT poses
             for ridxGT in range(len(gtFrames[imgidx]["annorect"])):
                 # GT pose

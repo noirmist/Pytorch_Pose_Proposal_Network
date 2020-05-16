@@ -24,3 +24,9 @@ PyTorch version: 1.1.0
 2. Update directory paths in train.sh
 3. Train the network
 4. Update directory paths in rt_test.sh and run the code
+
+# Reference
+
+- Pose proposal network: [here](https://github.com/Idein/chainer-pose-proposal-net)
+- Evaluation code: [here](https://github.com/leonid-pishchulin/poseval/)
+
